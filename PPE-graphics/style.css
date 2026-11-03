@@ -3,5 +3,7 @@ canvas{display:block;width:100%;height:100%}
 #v{position:fixed;inset:0;pointer-events:none;background:radial-gradient(ellipse at center,transparent 42%,rgba(0,0,0,.7) 100%)}
 #g{position:fixed;inset:0;pointer-events:none;opacity:.13;mix-blend-mode:overlay;background:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='200' height='200'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2'/></filter><rect width='200' height='200' filter='url(%23n)'/></svg>")}
 #s{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;color:#9aa4aa;font:15px/1.6 system-ui,sans-serif;background:rgba(5,7,9,.75);cursor:pointer;text-align:center;padding:24px;z-index:5}
-#s h1{font-weight:300;letter-spacing:.3em;font-size:22px;margin:0;color:#d5dce0}
-#s small{opacity:.7;max-width:560px}
+#s h1{font-weight:800;letter-spacing:.02em;font-size:44px;margin:0;color:#c96a2b;text-shadow:0 2px 0 #7a3a12,0 4px 10px rgba(0,0,0,.6)}
+#s h1 b{color:#e0803a}
+#s small{opacity:.7;max-width:640px}
+#s small b{color:#c9d2d8;opacity:1}

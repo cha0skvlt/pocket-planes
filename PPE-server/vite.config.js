@@ -45,14 +45,32 @@ function wasmNoCache() {
   };
 }
 
+// ship the wasm core with the build: pp.js fetches it at runtime by a raw URL,
+// so Vite's import pipeline never sees it — copy it into outDir on closeBundle.
+function wasmShip() {
+  return {
+    name: 'pp-wasm-ship',
+    closeBundle() {
+      const src = new URL('../PPE-graphics/sim/pocket_physics.wasm', import.meta.url).pathname;
+      const out = new URL('./dist/PPE-graphics/sim/pocket_physics.wasm', import.meta.url).pathname;
+      fs.mkdirSync(new URL('./dist/PPE-graphics/sim/', import.meta.url).pathname, {recursive: true});
+      fs.copyFileSync(src, out);
+      // the built entry chunk resolves './pocket_physics.wasm' relative to dist/assets/,
+      // so the core must also live there (import.meta.url of the bundled pp.js)
+      const out2 = new URL('./dist/assets/pocket_physics.wasm', import.meta.url).pathname;
+      fs.mkdirSync(new URL('./dist/assets/', import.meta.url).pathname, {recursive: true});
+      fs.copyFileSync(src, out2);
+      console.log('[pp-wasm-ship] copied pocket_physics.wasm -> dist/assets/ + dist/PPE-graphics/sim/');
+    },
+  };
+}
+
 export default defineConfig({
   base: './',
-  // copy the wasm core into the bundle: pp.js fetches it at runtime
-  plugins: [],
   build: {outDir: 'PPE-server/dist', emptyOutDir: true, target: 'es2020', sourcemap: false, chunkSizeWarningLimit: 900,
     rollupOptions: {output: {manualChunks: {three: ['three']}}}},
   optimizeDeps: {include: ['three', 'three/examples/jsm/utils/BufferGeometryUtils.js']},
-  plugins: [logEndpoint(), wasmNoCache()],
+  plugins: [logEndpoint(), wasmNoCache(), wasmShip()],
   // the wasm is fetched at runtime by pp.js — ship it with the build
   publicDir: false,
   assetsInclude: [],

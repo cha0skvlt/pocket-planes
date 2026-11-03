@@ -2,5 +2,6 @@ node_modules/
 dist/
 PPE-server/dist/
 PPE-physics/target/
-/old/
+old/*
+!.gitkeep
 .DS_Store

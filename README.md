@@ -1,9 +1,25 @@
-# Pocket Planes Expedition (PPE) — Flooded City FPV
+# Pocket Planes Expedition
 
 ![Pocket Planes Expedition — title art](docs/assets/title.png)
 
-A night-time flooded city you fly through with an FPV drone. Vite + three.js r128 for rendering,
-Rust compiled to WebAssembly for the physics core (sea + wind), zero-copy shared memory between them.
+**v0.5 Tech Demo** (2026-11-03) — live acceptance passed: WASM core, both bodies, sea/wind/rain/audio verified in the browser.
+
+A game about exploring a pocket dimension: a night-time flooded city you fly through with an FPV
+drone — and, when the drone can't go further, switch to the operator and keep going on foot.
+
+**Game design:** [CONCEPT.md](CONCEPT.md) — the design bible: fantasy, entities, the weather as
+the main enemy, honest-drift survival rules, roadmap and open questions.
+
+![three.js](https://img.shields.io/badge/three.js-r128-049EF4?logo=threedotjs&logoColor=white)
+![Rust](https://img.shields.io/badge/core-Rust%20%E2%86%92%20WASM-DEA584?logo=rust&logoColor=white)
+![Vite](https://img.shields.io/badge/build-Vite-646CFF?logo=vite&logoColor=white)
+![WebGL](https://img.shields.io/badge/render-WebGL-990000)
+![tests](https://img.shields.io/badge/tests-golden%20%2B%20integration%20%2B%20smoke-3FB950)
+![version](https://img.shields.io/badge/version-0.5--TechDemo-orange)
+
+---
+
+## Quick start
 
 ```
 npm install
@@ -19,7 +35,7 @@ Upgrading three means re-tuning lights (physical light units changed in r155) an
 ## Controls
 
 Mouse — heading/pitch, `W/S` — thrust, `A/D` — strafe, `Space/Shift` — up/down,
-arrow keys and `Q/E` — yaw, `Esc` — pause, `L` — silent lightning (off by default).
+arrow keys and `Q/E` — yaw, `Tab` — switch drone ⇄ operator, `Esc` — pause, `L` — silent lightning (off by default).
 
 ## Project layout
 
@@ -45,8 +61,8 @@ PPE-graphics/
   flight/
     input.js            keyboard and mouse
     drone.js            drone physics and camera (JS, reads wind/hgt from the core)
-    human.js            diver body rendering and camera (JS)
-    human-phys.js       diver body physics (JS, same pattern as the drone)
+    human.js            operator body rendering and camera (JS)
+    human-phys.js       operator body physics (JS, same pattern as the drone)
   ui/overlay.js         start/pause and pointer lock
   sim/
     pp.js               WASM loader + JS views over the shared memory block
@@ -123,5 +139,5 @@ Requires the `wasm32-unknown-unknown` std for your toolchain. The script drives 
 
 ## Design document
 
-`CONCEPT.md` — the game design: entities (diver, drone, container), the two-body loop,
-horror rules, and the roadmap. The Rust/WASM migration is recorded there as well.
+The design targets (operator body, drone claw, floating container, two-body switching, shadow
+entities, the leviathan) live in **[CONCEPT.md](CONCEPT.md)** and the audit notes.

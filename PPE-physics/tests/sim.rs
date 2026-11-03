@@ -250,3 +250,34 @@ fn golden_state_matches_js_dump() {
         );
     }
 }
+
+#[test]
+fn golden_wind_clock_matches_js_dump() {
+    // ABI guard (B1): the JS dump ran the reference wind for 600 s of variable-dt
+    // steps; the Rust wind must show the same clock behaviour — t equals accumulated
+    // sim time and u10 stays inside the breathing range. Catches pp_step(dt, u10)
+    // argument-order drift at the ABI level.
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/golden.json");
+    let data = std::fs::read(path).expect("golden.json missing - run node test/dump_golden.mjs");
+    let v: serde_json::Value = serde_json::from_str(std::str::from_utf8(&data).unwrap()).unwrap();
+    let wjs = &v["wind"];
+    let t_js = wjs["t"].as_f64().unwrap();
+    let dt_acc = wjs["dtAcc"].as_f64().unwrap();
+    let u10_js = wjs["u10"].as_f64().unwrap();
+    // the dump itself must be sane: clock == accumulated dt
+    assert!((t_js - dt_acc).abs() < 1e-6, "dump: wind.t {t_js} != dtAcc {dt_acc}");
+    let mut w = Wind::new();
+    let mut t = 0.0;
+    for i in 0..6000 {
+        let dt = 0.05 + 0.05 * (i as f64 * 0.7).sin();
+        t += dt;
+        w.update(dt, t);
+    }
+    assert!((t - t_js).abs() < 1e-6, "sim time {t} != dump {t_js}");
+    assert!(
+        (w.u10 - u10_js).abs() < 1e-6,
+        "u10 after 600 s: rust={:.4} js={u10_js:.4} (same deterministic path expected)",
+        w.u10
+    );
+    assert!(w.u10 > 5.0 && w.u10 < 20.0, "u10 breathes: {:.2}", w.u10);
+}

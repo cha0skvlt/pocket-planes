@@ -1,6 +1,6 @@
 // L3.7 — analytical unit tests for the human body physics (human-phys.js).
 // Philosophy: every check compares the simulation against a NUMBER computed by
-// hand from the declared model (CONCEPT.md §3.2), not against a snapshot.
+// hand from the declared model (see comments in human-phys.js), not against a snapshot.
 // Drone (flight/drone.js) is the reference for *style* — same frame conventions,
 // same input axes, same dt clamping; several tests here assert the human behaves
 // in the same frame the drone does.
@@ -70,7 +70,7 @@ ok('run-up to 95% of RUN = 0.95·RUN/ACCEL ≈ 0.57 s (rate-limited ramp, linear
   let t = 0;
   while (Math.hypot(H.vel.x, H.vel.z) < 0.95 * RUN && t < 2) { H.step(dt, t, { fwd: 1, side: 0, run: true, jump: false }); t += dt; }
   // the controller moves vel toward the target at exactly ACCEL m/s² (rate-limited),
-  // so the ramp is LINEAR: t = 0.95·RUN/ACCEL = 0.57 s. CONCEPT's "~0.6 s to run speed" ✓
+  // so the ramp is LINEAR: t = 0.95·RUN/ACCEL = 0.57 s. Design target "~0.6 s to run speed" ✓
   assert.ok(Math.abs(t - 0.95 * RUN / ACCEL) < 0.05, `measured ${t.toFixed(3)} s, analytic ${(0.95 * RUN / ACCEL).toFixed(3)} s`);
 });
 

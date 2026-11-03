@@ -15,8 +15,11 @@ const mat=new THREE.LineBasicMaterial({color:0xaab4bb,vertexColors:true,transpar
 const rain=new THREE.LineSegments(rg,mat);rain.frustumCulled=false;S.add(rain);
 const dv=new THREE.Vector3(),rv=new THREE.Vector3(),adv={x:0,z:0};let first=true;
 function update(dt,pos,vel,wind,gust){
- if(first){dv.set(wind.x,-FALL,wind.z);first=false}
- const k=1-Math.exp(-dt/.35);dv.x+=(wind.x-dv.x)*k;dv.z+=(wind.z-dv.z)*k;dv.y+=(-FALL+wind.y*.6-dv.y)*k;
+ // wind.x/y/z may be missing on a shim without a live at() (e.g. before the first frame):
+ // never let NaN into the drop velocities — hold the last valid field instead.
+ const wx=Number.isFinite(wind.x)?wind.x:dv.x, wy=Number.isFinite(wind.y)?wind.y:dv.y, wz=Number.isFinite(wind.z)?wind.z:dv.z;
+ if(first){dv.set(wx,-FALL,wz);first=false}
+ const k=1-Math.exp(-dt/.35);dv.x+=(wx-dv.x)*k;dv.z+=(wz-dv.z)*k;dv.y+=(-FALL+wy*.6-dv.y)*k;
  adv.x+=dv.x*.9*dt;adv.z+=dv.z*.9*dt;rv.copy(dv).sub(vel);mat.opacity=.22+.2*gust;
  for(let i=0;i<NR;i++){let x=hp[i*3]+rv.x*dt,y=hp[i*3+1]+rv.y*dt,z=hp[i*3+2]+rv.z*dt;
   if(x>40)x-=80;else if(x<-40)x+=80;if(y>25)y-=50;else if(y<-25)y+=50;if(z>40)z-=80;else if(z<-40)z+=80;

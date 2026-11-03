@@ -128,7 +128,7 @@ function step(dt,t){
   return;
  } const my=input.look.yaw;yaw+=my;yAcc+=my;input.look.yaw=0;pitch+=input.look.pitch;input.look.pitch=0;
  const kk=k=>K[k]?1:0,hy=(kk('ArrowLeft')+kk('KeyQ')-kk('ArrowRight')-kk('KeyE'))*1.7*dt;yaw+=hy;yAcc+=hy;pitch+=(kk('ArrowUp')-kk('ArrowDown'))*1.2*dt;pitch=Math.max(-1.45,Math.min(1.45,pitch));
- rate+=(yAcc/dt-rate)*(1-Math.exp(-10*dt));yAcc=0;
+ rate+=(yAcc/Math.max(dt,1e-3)-rate)*(1-Math.exp(-10*dt));yAcc=0;
  const cp=Math.cos(pitch);fw.set(-Math.sin(yaw)*cp,Math.sin(pitch),-Math.cos(yaw)*cp);rt.set(Math.cos(yaw),0,-Math.sin(yaw));
  tmp.set(0,0,0).addScaledVector(fw,(kk('KeyW')-kk('KeyS'))*38).addScaledVector(rt,(kk('KeyD')-kk('KeyA'))*28);tmp.y+=(kk('Space')-kk('ShiftLeft')-kk('ShiftRight'))*28;
  vel.addScaledVector(tmp,dt);
@@ -137,7 +137,7 @@ function step(dt,t){
  pos.addScaledVector(vel,dt); const wh=hgt(pos.x,pos.z,t);
  shk+=city.collide(pos,vel);
  if(pos.y<wh+1.6){shk+=Math.min(1,Math.abs(vel.y)*.02)+dt*2;pos.y=wh+1.6;vel.y=Math.max(vel.y,-vel.y*.2);vel.x*=1-.5*dt;vel.z*=1-.5*dt}
- shk*=Math.exp(-4*dt);
+ shk*=Math.exp(-4*dt);shk=Math.min(shk,1.5); // clamp: sustained surface contact must plateau, not grow
  const rr=Math.max(-.9,Math.min(.9,-rate*.14-vel.dot(rt)*.018));roll+=(rr-roll)*(1-Math.exp(-6*dt));
  syncSkin(dt);
  const sv=sp*.00004+.0012,j=(Math.sin(t*61)+Math.sin(t*37)*.7)*sv*(1+shk*10);

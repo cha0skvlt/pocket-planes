@@ -22,7 +22,7 @@ function capsule(r, len, capSeg = 6, radial = 12) {
   return BufferGeometryUtils.mergeBufferGeometries(parts);
 }
 
-/** The human body: a puffy rescue-diver suit rendered as soft capsules.
+/** The human body: a puffy rescue-operator suit rendered as soft capsules.
  *  Physics lives in JS (flight/human-phys.js) — same pattern as the drone:
  *  it reads the sea (WASM proxy or JS reference) through one interface.
  *  This module renders the body, applies the wave ragdoll (tilt + limb sway
@@ -215,7 +215,7 @@ export function createHuman(city) {
     get yaw() { return phys.yaw; }, set yaw(v) { phys.yaw = v; },
     get pitch() { return phys.pitch; }, set pitch(v) { phys.pitch = v; },
     get tilt() { return phys.tilt; }, get tiltDir() { return phys.tiltDir; },
-    get state() { return phys.state; }, get crouch() { return phys.crouch; },
+    get state() { return phys.state; }, get crouch() { return phys.crouch; }, set crouch(v) { phys.crouch = v; },
     get waveHit() { return phys.waveHit; }, get eyeH() { return phys.eyeH; },
   };
 }

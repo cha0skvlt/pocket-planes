@@ -37,9 +37,11 @@ export function sampleMod(u,v){const M=MOD_SIZE,fx=(u-Math.floor(u))*M-.5,fy=(v-
  for(let c=0;c<2;c++){const a=MOD[(ya*M+xa)*4+c],b=MOD[(ya*M+xb)*4+c],cc=MOD[(yb*M+xa)*4+c],d=MOD[(yb*M+xb)*4+c];
   m2[c]=((a+(b-a)*tx)*(1-ty)+(cc+(d-cc)*tx)*ty)/255}return m2}
 
-/** Sea state. w1=(dx,dz,k,A) w2=(ω,φ,sAlong,sAcross) w3=(cg,offU,offV,warp) - exactly what the shader reads. */
+/** Sea state. w1=(dx,dz,k,A) w2=(ω,φ,sAlong,sAcross) w3=(cg,offU,offV,warp) - exactly what the shader reads.
+ * MOD/MOD_SIZE ride on the object: main.js fallback passes `sea` (not the module) to createSeaUniforms,
+ * and the foam texture is built from these (B4 contract). */
 export const sea={w1:new Float32Array(N*4),w2:new Float32Array(N*4),w3:new Float32Array(N*4),
- Us:U_REF,th:TH0,drift:{x:0,z:0},ratio:new Float32Array(N).fill(1)};
+ Us:U_REF,th:TH0,drift:{x:0,z:0},ratio:new Float32Array(N).fill(1),MOD,MOD_SIZE};
 
 /** wind: {u10 - speed at 10 m, dir - wind direction (rad, in the x-z plane)}. */
 export function updateSea(dt,wind){const S=sea;

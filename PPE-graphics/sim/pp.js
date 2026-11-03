@@ -26,7 +26,10 @@ export const MAX_OBST = 4096;
 // cache-busting for the wasm: the browser may serve a stale pocket_physics.wasm
 // (physically identical file on disk, stale bytes in cache). Hard-reload once
 // (Cmd+Shift+R) if the human controls misbehave after a core change.
-export const BUILD_TAG = '2025-11-02.3'; // bump on every core change — cache-busting for the wasm
+export const BUILD_TAG = 'v0.5-techdemo'; // release tag — bump on every core change — cache-busting for the wasm
+
+// must match PP_ABI_VERSION in PPE-physics/src/lib.rs — checked after init
+export const EXPECTED_ABI = 2;
 
 export async function initPP() {
   // Hard no-cache: dev server sends Cache-Control: no-store for the wasm,
@@ -37,6 +40,11 @@ export async function initPP() {
   const ex = instance.exports;
   const statePtr = ex.pp_init();
   const mem = ex.memory;
+  // ABI handshake: a stale core with a different contract must fail loudly here,
+  // not silently corrupt the sea/wind later.
+  if (ex.pp_abi_version && ex.pp_abi_version() !== EXPECTED_ABI) {
+    throw new Error(`PP ABI mismatch: core ${ex.pp_abi_version()} != bridge ${EXPECTED_ABI} — rebuild the wasm`);
+  }
   const f32 = (o, l) => new Float32Array(mem.buffer, statePtr + o, l);
   PP.statePtr = statePtr;
   PP.memory = mem;
@@ -55,6 +63,9 @@ export async function initPP() {
   PP.at = ex.pp_at;
   PP.setObstacles = ex.pp_set_obstacles;
   PP.modPtr = ex.pp_mod_ptr;
+  // liveness check: any allocation that grew linear memory detaches the views;
+  // a detached view reads undefined and NaN-poisons the whole pipeline.
+  PP.live = () => PP.w1.buffer === PP.memory.buffer;
   // MOD tile: bytes straight from WASM memory (same seed 777, same layout).
   const modPtr = ex.pp_mod_ptr();
   PP.MOD = new Uint8Array(mem.buffer, modPtr, 256 * 256 * 4);
@@ -72,12 +83,14 @@ export const sea = {
   get drift() { return { x: PP.seaMisc[0], z: PP.seaMisc[1] } },
   get th() { return PP.seaMisc[2] }, get Us() { return PP.seaMisc[3] },
 };
-export function updateSea(dt, wind) { PP.step(dt, wind.u10, wind.dir); }
+export function updateSea(dt, wind) { PP.step(dt, wind.t); }
 export function hgt(x, z, t) { return PP.hgt(x, z, t); }
 export function createWind() {
+  const at = { x: 0, y: 0, z: 0, g: 0 };
   return {
     get u10() { return PP.wind[0] }, get dir() { return PP.wind[1] }, get U0() { return 12 },
-    get g() { return PP.wind[3] }, get adv() { return { x: PP.windAdv[0], z: PP.windAdv[1] } },
+    get g() { return PP.wind[3] }, get t() { return PP.wind[2] },
+    get adv() { return { x: PP.windAdv[0], z: PP.windAdv[1] } },
     setObstacles(list) {
       const n = Math.min(list.length, MAX_OBST);
       for (let i = 0; i < n; i++) {
@@ -91,6 +104,9 @@ export function createWind() {
       PP.at(x, y, z); // writes into at_out
       const v = PP.atOut;
       o.x = v[0]; o.y = v[1]; o.z = v[2];
+      at.x = v[0]; at.y = v[1]; at.z = v[2]; at.g = v[3];
     },
+    // last at() result as a plain vector — rain.js reads wind.x/y/z per drop
+    get x() { return at.x }, get y() { return at.y }, get z() { return at.z },
   };
 }

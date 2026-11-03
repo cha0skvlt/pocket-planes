@@ -1,5 +1,8 @@
 # Architecture
 
+**Pocket Planes Expedition (PPE) v0.5 — Tech Demo.** Live acceptance passed 2026-11-03:
+full boot with the WASM core, both bodies, sea/wind/rain/audio verified in the browser.
+
 Pocket Planes Expedition (PPE) is a browser game: three.js r128 renders, a Rust/WASM core
 simulates, and the two talk through a fixed shared-memory block. This document is the complete
 architectural map: every module, every cross-module contract, every invariant. An AI agent or
@@ -108,8 +111,9 @@ Plain `#[no_mangle] extern "C"` functions — no wasm-bindgen, no generated glue
 
 | export | purpose |
 |---|---|
-| `pp_init() -> ptr` | construct `Sea`/`Wind`, sync state, return the PPState pointer |
-| `pp_step(dt, t)` | one weather+sea tick: wind → sea → sync into PPState |
+| `pp_init() -> ptr` | construct `Sea`/`Wind`, sync state, return the PPState pointer. Idempotent: a second call returns the same pointer (a re-init would detach the JS views) |
+| `pp_abi_version() -> u32` | ABI handshake: `pp.js` compares against its `EXPECTED_ABI` after init and fails loudly on mismatch |
+| `pp_step(dt, t)` | one weather+sea tick: wind → sea → sync into PPState. **Second argument is sim time**, not wind speed |
 | `pp_hgt(x, z, t) -> f32` | water height at a point (mirror of the GLSL `H()`) |
 | `pp_at(x, y, z) -> ptr` | wind vector at a point, written to `at_out` |
 | `pp_set_obstacles(count)` | read `count` buildings from `PP_STATE.obst` into the wind model |
@@ -117,8 +121,10 @@ Plain `#[no_mangle] extern "C"` functions — no wasm-bindgen, no generated glue
 
 ### 2.3 The JS bridge (`PPE-graphics/sim/pp.js`)
 
-Fetches the wasm (`BUILD_TAG` query for cache busting), instantiates it, calls `pp_init`, builds
-typed-array views **once** (`PP.w1..w3`, `PP.wind`, `PP.obst`), and
+Fetches the wasm (`BUILD_TAG` query for cache busting), instantiates it, calls `pp_init`, checks
+`pp_abi_version()` against `EXPECTED_ABI` (loud failure on a stale core), builds
+typed-array views **once** (`PP.w1..w3`, `PP.wind`, `PP.obst`), exposes `PP.live()`
+(view-liveness check: `w1.buffer === memory.buffer`), and
 exposes legacy-compatible shims so callers never rewrite:
 
 - `sea` / `updateSea(dt, wind)` / `hgt(x,z,t)` — same shape as `sim/sea.js`;
@@ -126,6 +132,12 @@ exposes legacy-compatible shims so callers never rewrite:
 
 `main.js` boots with `initPP()`; on failure it falls back to the JS reference models
 (`sim/sea.js`, `sim/wind.js`) — the same formulas in f64, the golden source for tests.
+The fallback contract: `sea` export carries `MOD`/`MOD_SIZE` (foam texture), `createWind()`
+exposes `x/y/z` (last `at()` result, read by rain). Guarded by `test/fallback.test.mjs`.
+
+The vite build ships the wasm: `pp-wasm-ship` plugin copies `pocket_physics.wasm` into
+`dist/PPE-graphics/sim/` on `closeBundle` (pp.js fetches it by a raw URL, invisible to
+Vite's import pipeline).
 
 ---
 
@@ -134,18 +146,18 @@ exposes legacy-compatible shims so callers never rewrite:
 ```
 frame(dt):                       // dt clamped to 50 ms; one tick per frame, no accumulator
   sdt = run ? dt : dt*0.2        // paused world still breathes at 20% speed
-  t += sdt
-  wind.update(sdt, t)            // mean wind breathes; gust field advects itself
-  updateSea(sdt, wind)           // pp_step: sea chases wind (τ≈150 s), ratio bands update
-  seaU.uDrift.set(drift)         // read from the shared block
+  t += sdt; tw = t % 3600        // uniform time wraps at 1 h so ω·t never loses f32 precision
+  wind.update(sdt, tw)           // mean wind breathes; gust field advects itself
+  updateSea(sdt, wind)           // pp_step(sdt, tw): sea chases wind (τ≈150 s), ratio bands update
+  uDrift += drift*sdt            // drift is a VELOCITY: integrate into the shader offset
   clouds drift by wind.dir       // fogU.uCloud
   if running:
-    human: step(dt, t, input)     // JS physics (human-phys.js): FSM, swim, groundY, capsule collide
-    drone: step(dt, t)            // wind.at(pos), thrust/inertia, AABB collide, camera roll/FOV/shake
+    human: step(dt, tw, input)   // JS physics (human-phys.js): FSM, swim, groundY, capsule collide
+    drone: step(dt, tw)          // wind.at(pos), thrust/inertia, AABB collide, camera roll/FOV/shake
     camera: follows the active body; Tab switch flies an arc (smoothstep, +6 m apex)
-    audio.update / rain.update   // both consume the active body's state and the same wind
+    audio.update / rain.update   // audio gets altitude ABOVE the water; rain gets wind.x/y/z + wind.g
   else: drone.idle(); camera lifted 0.6 m off the hull
-  atmo.update(t); T.value = t; city.update(t, sdt)
+  atmo.update(tw); T.value = tw; city.update(tw, sdt)
   renderer.render(scene, camera)
 ```
 
@@ -178,7 +190,7 @@ absolute yaw/pitch. Never overwrite one with the other.
 | `shaders/ocean.js` | 22 | GLSL: `H(p,t)` — 5 modulated Gerstner-ish bands, foam, moon trail. Formula-twin of `sea.rs`/`sea.js` | waves |
 | `shaders/sky.js` | 38 | GLSL: gradient-noise clouds, moon, halo, lightning flash uniform | sky mesh |
 | `world/waves.js` | 14 | uniform bridge: `uW1/uW2/uW3` arrays + `uMod` DataTexture from PPState; `hgt` exported (WASM or JS fallback) | sim/pp |
-| `world/ocean.js` | 8 | 1000×1000 plane, 400×400 segs, re-centers on the active body in 4 m snaps (wave field is world-space, snap invisible) | stage, shaders |
+| `world/ocean.js` | 8 | 1000×1000 plane, 400×400 segs (2.5 m), re-centers on the active body in 5 m snaps (multiple of the 2.5 m vertex step — the grid phase never jumps) | stage, shaders |
 | `world/sky.js` | 8 | sky dome mesh | stage, shaders |
 | `world/lights.js` | 6 | hemisphere + directional (moon); intensity driven by `vis` in atmosphere | stage, atmosphere |
 | `world/textures.js` | 22 | procedural facade + foam canvas textures | city |
@@ -188,12 +200,12 @@ absolute yaw/pitch. Never overwrite one with the other.
 | `audio/audio.js` | 27 | fully synthesized WebAudio: wind noise filtered by state, rumble, splash. No samples | main |
 | `flight/input.js` | 20 | keyboard state map, pointer-lock mouse deltas (`look.yaw/pitch` are **deltas**) | main |
 | `flight/drone.js` | 162 | drone physics + camera + the 3D skin (orange FPV quad): thrust/inertia, AABB collide, roll from yaw rate, FOV breathing, shake; `setActive` toggles skin visibility | input, city, sim |
-| `flight/human.js` | ~215 | diver body **rendering**: suited-body rig (torso/pack/helmet/visor/limbs), drives the step of `human-phys.js`, applies wave ragdoll (tilt + limb sway), drives the camera | human-phys, city |
-| `flight/human-phys.js` | 260 | diver body **physics, pure JS** (same pattern as the drone): capsule FSM Ground/Jump/Swim, walk/run/jump/crouch, swim = water carry + own stroke (Stokes transport × CARRY_GAIN × sea-state gate + drift, surf push from crest slope, head-floor buoyancy), groundY from city AABBs, capsule collision. Constants: WALK 1.6, RUN 4.2, SWIM_SPEED 0.9, JUMP_V 4.65, CARRY_GAIN 0.45, SURF_PUSH 1.4, WATER_DRAG 1.6 | sim/sea (sampleMod), city, hgt |
+| `flight/human.js` | ~215 | operator body **rendering**: suited-body rig (torso/pack/helmet/visor/limbs), drives the step of `human-phys.js`, applies wave ragdoll (tilt + limb sway), drives the camera | human-phys, city |
+| `flight/human-phys.js` | 260 | operator body **physics, pure JS** (same pattern as the drone): capsule FSM Ground/Jump/Swim, walk/run/jump/crouch, swim = water carry + own stroke (Stokes transport × CARRY_GAIN × sea-state gate + drift, surf push from crest slope, head-floor buoyancy), groundY from city AABBs, capsule collision. Constants: WALK 1.6, RUN 4.2, SWIM_SPEED 0.9, JUMP_V 4.65, CARRY_GAIN 0.45, SURF_PUSH 1.4, WATER_DRAG 1.6 | sim/sea (sampleMod), city, hgt |
 | `ui/overlay.js` | 9 | start/pause overlay, pointer lock, `?autostart` query param | main |
 | `sim/pp.js` | ~110 | **the bridge**: wasm load, PPState views, shims (`sea`, `updateSea`, `hgt`, `createWind`), `BUILD_TAG` | WASM |
-| `sim/sea.js` | 65 | JS reference sea (f64): dispersion, P–M spectrum, τ-chase, drift, mod field (seed 777), `hgt` | shaders (must match) |
-| `sim/wind.js` | 40 | JS reference wind: breathing mean, log profile, advected gust noise, building wake | sim/pp (interface twin) |
+| `sim/sea.js` | 65 | JS reference sea (f64): dispersion, P–M spectrum, τ-chase, drift, mod field (seed 777), `hgt`. The `sea` export carries `MOD`/`MOD_SIZE` (fallback foam-texture contract) | shaders (must match) |
+| `sim/wind.js` | 42 | JS reference wind: breathing mean, log profile, advected gust noise, building wake, `x/y/z` = last `at()` result (rain contract) | sim/pp (interface twin) |
 | `style.css` | — | overlay, vignette, grain | — |
 
 Boot order in `main.js`: `initPP` → stage → `PP.scene/camera` registered → sky/ocean/lights →
@@ -220,9 +232,10 @@ There is no `human.rs` — the human body is JS-side (`flight/human-phys.js`), l
 The archived Rust version lives in `old/human-rs-archived.rs` for reference.
 
 Build: `make wasm` → `PPE-physics/scripts/build.sh` drives `rustc` directly to
-`wasm32-unknown-unknown` (Homebrew cargo may not see rustup std; `RUST_TC=<toolchain>` overrides)
-→ output to `PPE-graphics/sim/pocket_physics.wasm` (~150 KB). Dev-server no-cache middleware
-keeps stale cores out of the browser.
+`wasm32-unknown-unknown` (`--edition 2021`; Homebrew cargo may not see rustup std;
+`RUST_TC=<toolchain>` overrides) → output to `PPE-graphics/sim/pocket_physics.wasm`
+(~118 KB). Dev-server no-cache middleware keeps stale cores out of the browser; the
+`pp-wasm-ship` vite plugin copies it into `dist/` on build.
 
 ---
 
@@ -269,9 +282,10 @@ Obstacles come from `city.bl` (AABB list): JS writes `{x, z, hw, hd, top}` per b
    `Float32Array` reads return `undefined`, three.js `flatten()` throws
    `firstElem.toArray is not a function`. The obstacle buffer is preallocated to `MAX_OBST`
    in `Wind::new()` and filled with `clear()+push`, never `collect()`.
-2. **No double unwrapping.** `updateSeaPP(dt, wind)` reads `wind.u10`/`wind.dir` itself.
-   Passing pre-unwrapped numbers sends `undefined` into an f32 param → `NaN` → the whole
-   `w1` uniform becomes NaN.
+2. **No double unwrapping.** `updateSeaPP(dt, wind)` reads `wind.t` itself and calls
+   `pp_step(dt, t)` — the second argument is **sim time**, never wind speed. Passing
+   pre-unwrapped numbers sends `undefined` into an f32 param → `NaN` → the whole
+   `w1` uniform becomes NaN. Guarded by the Rust golden wind-clock test.
 3. **Logical shifts in the RNG port.** JS `>>>` is unsigned; Rust `>>` on `i32` is arithmetic.
    `rng.rs` does shift math on `u32`. Get this wrong and the sea silently runs on a different
    seed — waves still render, they just don't match the reference.
@@ -291,9 +305,10 @@ Layered, all runnable without a browser except the last:
 | layer | command | what it proves |
 |---|---|---|
 | L1 golden | `npm test` (`test/sim.test.mjs`) | 14 checks on the JS reference model: waves run downwind, rms height in range, modulation tiles seamlessly, sea responds to wind, wind profile grows with height, wake/stagnation/speed-up around buildings, noise statistics |
-| L1 golden (Rust) | `cd PPE-physics && cargo test` (`tests/sim.rs`) | the same checks ported, **plus** `golden_state_matches_js_dump`: `w1/w2/w3/ratio` and 20 `hgt()` probes bit-for-bit against `tests/golden.json` |
+| L1 golden (Rust) | `cd PPE-physics && cargo test` (`tests/sim.rs`) | the same checks ported, **plus** `golden_state_matches_js_dump`: `w1/w2/w3/ratio` and 20 `hgt()` probes bit-for-bit against `tests/golden.json`, **plus** `golden_wind_clock_matches_js_dump`: the wind clock over 600 s of variable-dt steps matches the JS dump (ABI guard for `pp_step(dt, t)`) |
 | L1.5 edge | `cargo test` (`tests/edge.rs`) | `MAX_OBST` boundary, zero-wind sea stability, `hgt` finite over 5000 random probes |
 | L2 integration | `node test/integration.mjs` | the WASM contract itself: layout offsets, view liveness, the no-alloc invariant, full per-frame call sequence |
+| L2.5 fallback | `node --test test/fallback.test.mjs` | the JS-fallback contract: `sea.MOD`/`MOD_SIZE` on the sea object (foam texture), `wind.x/y/z` on the reference wind (rain), `hgt` finite |
 | L3.5 wrapper | `node test/human-model.mjs` | the human model through the **real `createHumanPhys()`** on the WASM sea: spawn, roof walk, fall→Swim, calm/storm swim, head floor, jump apex, crouch |
 | L4 smoke | `node test/smoke.mjs` | a full game session emulated in Node: spawn on roof, walk/run, jump, fall into water, swim, storm, 5-minute stability — with realistic input scripts |
 | manual | `node` + browser at `test/pp-test.html` | boots the core, prints live `w1/w2/w3`, obstacle flow, 5000-step timing |
@@ -328,8 +343,12 @@ Layered, all runnable without a browser except the last:
 
 ## 12. Where the project is going
 
-`CONCEPT.md` holds the design: the diver body (walking, visor, drowning), the drone claw,
-the floating container, two-body switching, shadow entities and the leviathan. The Rust core
+**Current release: v0.5 Tech Demo** (2026-11-03). Live acceptance passed: WASM core boots,
+both bodies playable, sea/wind/rain/audio verified in the browser. The P0/P1 audit fixes
+(ABI clock, crouch crash, wasm shipping, fallback contracts) are in and guarded by tests.
+
+The design targets (operator body, drone claw, floating container, two-body switching, shadow
+entities, the leviathan) live in the git history and the audit notes. The Rust core
 covers the environment (sea + wind); bodies are JS and read it through one interface. New
 body-physics systems (claw, container physics, interiors) go into JS following the
 human-phys/drone pattern; only if a body simulation becomes compute-heavy does it migrate to

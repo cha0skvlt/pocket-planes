@@ -21,7 +21,9 @@ function wake(b,x,y,z,cx,cz){
  if(ay>Wp*.9&&s>-Lp*1.2&&s<Lp*3+3*Wp){const f=Math.exp(-(ay-Wp)/(.8*Wp))*fh;acc.k+=.18*f;acc.n+=Math.sign(c)*.4*f}}
 
 export function createWind(){
+ const last={x:0,y:0,z:0}; // last at() result — rain.js reads wind.x/y/z per drop
  const W={u10:U0,dir:TH0,g:.5,t:0,adv:{x:0,z:0},obst:[],U0,
+  get x(){return last.x},get y(){return last.y},get z(){return last.z},
   setObstacles(list){W.obst=list},
   update(dt,t){W.t=t;W.u10=U0*(1+.22*Math.sin(TAU*t/410)+.1*Math.sin(TAU*t/97));
    W.dir=TH0+.3*Math.sin(TAU*t/530)+.12*Math.sin(TAU*t/151);
@@ -36,5 +38,6 @@ export function createWind(){
    out.x=U*cx*f-cz*acc.n*U+sg*(Math.sin(2.3*t+.11*x+.05*z)+.7*Math.sin(5.1*t+.23*z+1));
    out.z=U*cz*f+cx*acc.n*U+sg*(Math.sin(2.9*t+.09*z+.04*x+2)+.7*Math.sin(4.3*t+.19*x));
    out.y=acc.dy*U+sg*.6*(Math.sin(3.7*t+.17*(x+z))+.5*Math.sin(7.3*t+.3*x));
+   last.x=out.x;last.y=out.y;last.z=out.z;
    W.g=Math.min(1,g+acc.t*1.2)}};
  return W}

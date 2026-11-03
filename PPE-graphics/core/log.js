@@ -31,10 +31,12 @@ export const log = {
 // remote readout: window.__ppLog.dump() from console, or fetch('/__log') in dev.
 // The ring buffer is POSTed to the dev server every 2 s (and on error immediately),
 // so the agent can read the browser log with curl without opening the page.
+// DEV only: in a production bundle /__log does not exist and POSTs would 404-spam.
 if (typeof window !== 'undefined') {
   window.__ppLog = log;
   window.addEventListener('error', e => log.error('uncaught:', e.message, e.filename + ':' + e.lineno));
   window.addEventListener('unhandledrejection', e => log.error('unhandled rejection:', e.reason));
+  if ((globalThis.__PP_DEV__ ?? (import.meta.env && import.meta.env.DEV))) {
   const flush = () => {
     if (buf.length) {
       const lines = buf.splice(0).map(e => `${e.t}s [${e.lvl}] ${e.msg}`);
@@ -43,4 +45,5 @@ if (typeof window !== 'undefined') {
   };
   setInterval(flush, 2000);
   window.addEventListener('beforeunload', flush);
+  }
 }

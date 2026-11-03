@@ -98,9 +98,14 @@ fn state() -> &'static mut PPState {
 
 /// Init: construct Sea and Wind, write the initial state into PP_STATE.
 /// Returns the PPState pointer — JS builds its views from it.
+/// Idempotent: a second call returns the same pointer and does not re-allocate
+/// (a re-init would detach the JS views built from the first pointer).
 #[no_mangle]
 pub extern "C" fn pp_init() -> *mut PPState {
     unsafe {
+        if (*core::ptr::addr_of!(SEA)).is_some() {
+            return core::ptr::addr_of_mut!(PP_STATE);
+        }
         let mut sea = Box::new(Sea::new());
         let mut wind = Box::new(Wind::new());
         wind.update(0.0, 0.0);
@@ -110,6 +115,15 @@ pub extern "C" fn pp_init() -> *mut PPState {
         sync();
         core::ptr::addr_of_mut!(PP_STATE)
     }
+}
+
+/// ABI version handshake: JS compares this against its own constant after init.
+/// Bump on every contract change (layout, export signatures, semantics).
+pub const PP_ABI_VERSION: u32 = 2;
+
+#[no_mangle]
+pub extern "C" fn pp_abi_version() -> u32 {
+    PP_ABI_VERSION
 }
 
 /// Main step: wind → sea → sync into PP_STATE. JS calls it once per frame.

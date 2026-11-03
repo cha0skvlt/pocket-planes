@@ -2,7 +2,7 @@
 // the body lives in JS and reads the environment (sea) from the active model
 // (WASM PPState proxy or the JS reference in sim/sea.js) — one interface.
 //
-// Design laws (CONCEPT.md §3.2):
+// Design laws (game design, see git history):
 // - Wind does NOT push the body horizontally (too heavy) — it only leans the torso.
 // - The head can never go under the surface: buoyancy always wins (y_head >= h + 0.15).
 // - Swimming is slow (0.9 m/s) and RELATIVE TO THE WATER. The water itself moves with
@@ -12,7 +12,7 @@
 
 // capsule: feet at pos.y, head at pos.y + 1.7 (standing) / +1.0 (crouched)
 export const STAND_H = 1.7, CROUCH_H = 1.0, RADIUS = 0.35;
-// locomotion (CONCEPT.md numbers)
+// locomotion constants (game design)
 export const WALK = 1.6, RUN = 4.2, SWIM_SPEED = 0.9;
 export const ACCEL = 7.0;      // ground accel, m/s^2 (~0.6 s to run speed)
 export const BRAKE = 3.5;      // ground decel, m/s^2 (~1.2 m stopping from run)

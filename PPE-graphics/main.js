@@ -17,7 +17,7 @@ import {createSeaUniforms} from './world/waves.js';
 import {createOverlay} from './ui/overlay.js';
 import {initPP,PP,sea as seaPP,updateSea as updateSeaPP} from './sim/pp.js';
 import {createWind as createWindJS} from './sim/wind.js';
-import {sea as seaJS,updateSea as updateSeaJS} from './sim/sea.js';
+import {sea as seaJS,updateSea as updateSeaJS,hgt as hgtJS} from './sim/sea.js';
 
 const ac=new AbortController(),signal=ac.signal;
 
@@ -84,10 +84,16 @@ async function boot(){
  document.addEventListener('visibilitychange',()=>{if(state.run)audio.setSuspended(document.hidden)},{signal});
 
  const clock=new THREE.Clock();let t=0,raf=0;
+ // uniform time wrap: t grows unbounded in f64 (JS), but the shader and pp_step see f32.
+ // Wrap at 3600 s so ω·t never loses f32 precision (phase jump once per hour, unnoticeable).
+ const T_WRAP=3600;
  function frame(){const dt=Math.min(clock.getDelta(),.05),sdt=state.run?dt:dt*.2;
-  t+=sdt;
+  t+=sdt;const tw=t%T_WRAP;
   /* one world: wind -> sea, clouds, rain, both bodies */
-  wind.update(sdt,t);updateSea(sdt,wind);seaU.uniforms.uDrift.value.set(sea.drift.x,sea.drift.z);
+  wind.update(sdt,tw);updateSea(sdt,wind);
+  // drift is a VELOCITY (~3% of wind): integrate into an offset for the shader,
+  // which samples foam noise at (p - uDrift). Raw velocity made foam jump ~0.4 m/frame.
+  seaU.uniforms.uDrift.value.x+=sea.drift.x*sdt;seaU.uniforms.uDrift.value.y+=sea.drift.z*sdt;
   const cr=wind.u10/wind.U0*sdt;fogU.uCloud.value.x+=Math.cos(wind.dir)*cr;fogU.uCloud.value.y+=Math.sin(wind.dir)*cr;
   if(state.run){
    // both bodies always step; input goes to the active one
@@ -99,9 +105,9 @@ async function boot(){
     // human.yaw is the ABSOLUTE course — never overwrite one with the other.
     if(active){human.yaw+=input.yaw;human.pitch=Math.max(-1.45,Math.min(1.45,human.pitch+input.pitch));input.look.yaw=0;input.look.pitch=0}
     human.crouch=inp.crouch;
-    human.step(dt,t,{fwd:inp.fwd,side:inp.side,run:inp.run,jump:inp.jump});
+    human.step(dt,tw,{fwd:inp.fwd,side:inp.side,run:inp.run,jump:inp.jump});
    }
-   drone.step(dt,t);const {pos,vel,wind:dw,out}=drone;
+   drone.step(dt,tw);const {pos,vel,wind:dw,out}=drone;
    // camera follows the active body; during Tab the arc flies between them
    if(switchT>=0&&human){ // arc only when both bodies exist
     switchT+=dt*1.6;
@@ -114,14 +120,15 @@ async function boot(){
     if(switchT>=1)switchT=-1;
    }
    if(body==='drone'){
-    sky.position.copy(pos);ocean.position.set(Math.round(pos.x/4)*4,0,Math.round(pos.z/4)*4);
-    audio.update(dt,t,out.sp,out.gust,pos.y-out.wh,drone.shk);
+    sky.position.copy(pos);ocean.position.set(Math.round(pos.x/5)*5,0,Math.round(pos.z/5)*5);
+    audio.update(dt,tw,out.sp,out.gust,pos.y-out.wh,drone.shk);
     rain.update(dt,pos,vel,dw,out.gust);
    } else if(human){
     const hp=human.pos,hv=human.vel;
-    audio.update(dt,t,Math.hypot(hv.x,hv.z),wind.g,hp.y+1.6,human.waveHit);
-    rain.update(dt,{x:hp.x,y:hp.y+1.6,z:hp.z},hv,wind,human.waveHit);
-    sky.position.set(hp.x,0,hp.z);ocean.position.set(Math.round(hp.x/4)*4,0,Math.round(hp.z/4)*4);
+    // alt ABOVE the water surface (audio fades with altitude over the sea, not absolute y)
+    audio.update(dt,tw,Math.hypot(hv.x,hv.z),wind.g,hp.y-hgtJS(hp.x,hp.z,tw),human.waveHit);
+    rain.update(dt,{x:hp.x,y:hp.y+1.6,z:hp.z},hv,wind,wind.g);
+    sky.position.set(hp.x,hp.y,hp.z);ocean.position.set(Math.round(hp.x/5)*5,0,Math.round(hp.z/5)*5);
    }
   }else{ // paused: hold the last camera, keep the world breathing, no bodies step
    if(body==='drone'){drone.idle();sky.position.copy(drone.pos);
@@ -130,7 +137,7 @@ async function boot(){
     cam.position.y+=0.6;
    } // human active: keep the last human camera exactly where it was
   }
-  atmo.update(t);T.value=t;city.update(t,sdt);
+  atmo.update(tw);T.value=tw;city.update(tw,sdt);
   R.render(S,cam);raf=requestAnimationFrame(frame)}
  frame();
 
