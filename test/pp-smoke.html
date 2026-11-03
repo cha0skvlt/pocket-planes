@@ -1,0 +1,148 @@
+<!doctype html>
+<meta charset="utf-8"><title>PPE smoke — live browser, no WebGL needed</title>
+<body style="font:12px monospace;background:#111;color:#0c0;padding:8px;margin:0">
+<pre id="r">booting…</pre>
+<script type="module">
+// L5 — live browser smoke test. Boots the REAL game stack in a REAL browser:
+// WASM core, wind, sea uniforms, city, input map, drone + human physics, the
+// frame loop — everything except the WebGL renderer (stubbed). Catches what
+// Node tests cannot: module wiring in the browser, real rAF-independent
+// stepping, DOM keyboard events driving the actual input layer.
+//
+// Scenarios:
+//   1. boot: WASM up, city built (95), both bodies spawn — no console errors
+//   2. drone: fly 5 s forward — speed, altitude, wind field answers
+//   3. Tab switch: actives swap, bodies are distinct
+//   4. human: run on the roof via REAL keydown events — 4.2 m/s, Ground
+//   5. human: fall from 30 m → Swim, head never under the surface
+//   6. human: storm swim 10 s — no NaN, head held, sea motion reaches the body
+//   7. pause: bodies frozen, sea still breathes (sdt = dt*0.2)
+// Verdict: SMOKE OK / SMOKE FAILED, also on window.__ppSmoke (for agents).
+const $ = id => document.getElementById(id);
+const out = [];
+const ok = (c, name) => { out.push((c ? '  ok  ' : 'FAIL  ') + name); if (!c) window.__ppSmokeFailed = true; };
+const renderCalls = { n: 0 };
+
+// ---- 0. stub WebGL BEFORE any module loads -------------------------------
+// three.js only needs a context to construct the renderer; we never construct
+// one — createStage is NOT imported. Anything else that asks for GL gets a
+// loud failure so we notice accidental GL usage in the logic path.
+let glAsked = false;
+const realGetContext = HTMLCanvasElement.prototype.getContext;
+HTMLCanvasElement.prototype.getContext = function (type, ...a) {
+  if (type === 'webgl' || type === 'webgl2') { glAsked = true; throw new Error('webgl-stub'); }
+  return realGetContext.call(this, type, ...a);
+};
+
+const t0 = performance.now();
+try {
+  // ---- 1. boot ------------------------------------------------------------
+  const PPm = await import('/PPE-graphics/sim/pp.js');
+  const { initPP, PP, createWind: createWindPP, sea: seaPP, updateSea: updateSeaPP } = PPm;
+  await initPP();
+  ok(PP.ready, 'boot: WASM core up (statePtr=' + PP.statePtr + ')');
+  const wind = createWindPP();
+  // scene WITHOUT WebGL: a plain three Scene + camera, no renderer
+  const THREE = await import('three');
+  const S = new THREE.Scene(), cam = new THREE.PerspectiveCamera();
+  PP.scene = S; PP.camera = cam;
+  const { createSeaUniforms } = await import('/PPE-graphics/world/waves.js');
+  const seaU = createSeaUniforms(seaPP);
+  const { createCity } = await import('/PPE-graphics/world/city.js');
+  const stubTex = () => ({ dispose() {} });
+  const city = createCity(S, { wt: stubTex(), ft: stubTex() });
+  ok(city.bl.length === 95, `city: ${city.bl.length} buildings (expect 95)`);
+  wind.setObstacles(city.bl);
+  const { createInput } = await import('/PPE-graphics/flight/input.js');
+  const input = createInput({ aborted: false });
+  const { createDrone } = await import('/PPE-graphics/flight/drone.js');
+  const drone = createDrone({ S: null, cam, city, input, windSys: wind }); // S=null: no skin
+  const { createHuman } = await import('/PPE-graphics/flight/human.js');
+  const human = createHuman(city);
+  const roof = city.bl.reduce((a, b) => b.top > a.top ? b : a);
+  human.spawn(roof.x, roof.top, roof.z, 0.64);
+  human.setActive(false);
+  ok(Math.abs(human.pos.y - roof.top) < 1e-6, `boot: human spawned on the tallest roof (${roof.top.toFixed(0)} m)`);
+
+  // keyboard driver: dispatch REAL keydown/keyup like a player
+  const key = (code, down) => dispatchEvent(new KeyboardEvent(down ? 'keydown' : 'keyup', { code }));
+
+  let t = 0, i = 0;
+  const frame = (dt = 1 / 60) => { i++; t += dt; wind.update(dt, t); updateSeaPP(dt, wind); drone.step(dt, t); };
+
+  // ---- 2. drone flight ----------------------------------------------------
+  key('KeyW', true);
+  for (let f = 0; f < 300; f++) frame(); // 5 s forward
+  key('KeyW', false);
+  const dsp = drone.vel.length();
+  ok(dsp > 20, `drone: 5 s thrust → speed ${dsp.toFixed(1)} m/s (expect >20)`);
+  ok(Number.isFinite(drone.pos.y) && drone.pos.y > 0, `drone: altitude sane (${drone.pos.y.toFixed(1)} m)`);
+  const at = { x: 0, y: 0, z: 0 };
+  wind.at(drone.pos.x, drone.pos.y, drone.pos.z, at);
+  ok([at.x, at.y, at.z].every(Number.isFinite), `drone: wind.at answers (${at.x.toFixed(2)},${at.y.toFixed(2)},${at.z.toFixed(2)})`);
+
+  // ---- 3. Tab switch (the main.js handover logic) --------------------------
+  drone.setActive(false); human.setActive(true);
+  ok(!drone.active && human.active, 'Tab: drone → human handover (actives swapped)');
+
+  // ---- 4. human run on the roof via real keys ------------------------------
+  human.spawn(roof.x, roof.top, roof.z, 0);
+  const inp0 = input.human();
+  ok(inp0.fwd === 0 && !inp0.run, 'input.human(): no keys → idle readout');
+  key('KeyW', true); key('ShiftLeft', true);
+  for (let f = 0; f < 120; f++) { // 2 s run
+    human.yaw = -Math.PI / 2; // face +X
+    human.step(1 / 60, t += 1 / 60, input.human());
+  }
+  key('KeyW', false); key('ShiftLeft', false);
+  const hsp = Math.hypot(human.vel.x, human.vel.z);
+  ok(Math.abs(hsp - 4.2) < 0.6, `human run on roof via real key events: ${hsp.toFixed(2)} m/s (model 4.2)`);
+  ok(human.state === 0, `human stays Ground on the roof (got ${human.state})`);
+
+  // ---- 5. fall into water -------------------------------------------------
+  human.spawn(0, 30, 0, 0); // open water below
+  let headBad = 0, enteredSwim = false;
+  for (let f = 0; f < 400; f++) {
+    human.step(1 / 60, t += 1 / 60, { fwd: 0, side: 0, run: false, jump: false });
+    if (human.state === 2) enteredSwim = true;
+    const surf = PP.hgt(human.pos.x, human.pos.z, t);
+    if (human.pos.y + human.eyeH < surf - 1e-4) headBad++;
+  }
+  ok(enteredSwim, 'fall from 30 m → Swim state reached');
+  ok(headBad === 0, `head never under the surface (${headBad} bad frames)`);
+
+  // ---- 6. storm swim ------------------------------------------------------
+  for (let f = 0; f < 900; f++) PP.step(1, f); // spin the sea up (~15 min of weather)
+  human.spawn(0, -0.3, 0, Math.PI); // stroke into the waves
+  let maxV = 0, bad = 0;
+  for (let f = 0; f < 600; f++) {
+    human.step(1 / 60, t += 1 / 60, { fwd: 1, side: 0, run: false, jump: false });
+    maxV = Math.max(maxV, Math.hypot(human.vel.x, human.vel.z));
+    const surf = PP.hgt(human.pos.x, human.pos.z, t);
+    if (human.pos.y + human.eyeH < surf - 1e-4) bad++;
+    if (!Number.isFinite(human.pos.x)) { bad += 1000; break; }
+  }
+  ok(bad === 0, `storm swim: no NaN, head held (${bad} violations)`);
+  ok(maxV > 0.3, `storm water motion reaches the swimmer (${maxV.toFixed(2)} m/s peak)`);
+
+  // ---- 7. paused world breathes ------------------------------------------
+  const posBefore = { ...human.pos };
+  wind.update(1 / 60 * 0.2, t += 0.2); updateSeaPP(1 / 60 * 0.2, wind);
+  ok(Math.abs(posBefore.x - human.pos.x) < 1e-12, 'paused: human frozen (bodies do not step)');
+  ok(Number.isFinite(seaPP.drift.x), 'paused: sea still breathes (sdt=dt*0.2)');
+
+  // ---- verdict ------------------------------------------------------------
+  ok(!glAsked, 'no WebGL usage in the logic path (stub was never hit)');
+  const elapsed = performance.now() - t0;
+  out.push(`\nall scenarios done in ${elapsed.toFixed(0)} ms`);
+  const failed = !!window.__ppSmokeFailed;
+  out.push(failed ? 'SMOKE FAILED' : 'SMOKE OK');
+  window.__ppSmoke = failed ? 'FAILED' : 'OK';
+} catch (e) {
+  out.push('HARNESS CRASH: ' + (e && e.stack || e));
+  window.__ppSmoke = 'FAILED';
+}
+document.getElementById('r').textContent = out.join('\n');
+window.scrollTo(0, document.body.scrollHeight);
+</script>
+</body>

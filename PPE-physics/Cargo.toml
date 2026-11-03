@@ -1,0 +1,22 @@
+[package]
+name = "pocket-physics"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+# Zero dependencies: plain extern "C" + WebAssembly.Memory, no wasm-bindgen.
+[dependencies]
+
+[dev-dependencies]
+serde_json = "1"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+
+# WASM build: rust/scripts/build.sh
+# (Homebrew cargo does not see rustup std — build.sh drives rustc directly)

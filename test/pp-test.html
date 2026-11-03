@@ -1,0 +1,40 @@
+<!doctype html>
+<meta charset="utf-8"><title>PP-WASM test</title>
+<body style="font:12px monospace;background:#111;color:#0c0;padding:8px">
+<pre id="r">loading…</pre>
+<script type="module">
+import {initPP,PP} from '/PPE-graphics/sim/pp.js';
+const log=[];
+try{
+  await initPP();
+  log.push('initPP: ok, statePtr='+PP.statePtr);
+  // as in the game: ~95 buildings, views created BEFORE setObstacles
+  const bl=[];
+  for(let i=0;i<95;i++)bl.push({x:(i*137)%800-400,z:(i*91)%800-400,hw:12+i%9,hd:10+i%7,top:40+(i*29)%100});
+  const n=Math.min(bl.length,4096);
+  for(let i=0;i<n;i++){const b=bl[i],o=i*5;
+    PP.obst[o]=b.x;PP.obst[o+1]=b.z;PP.obst[o+2]=b.hw;PP.obst[o+3]=b.hd;PP.obst[o+4]=b.top}
+  PP.setObstacles(n);
+  log.push('setObstacles('+n+' buildings): ok');
+  // one step as in the reference: dt=0.016, t=1000
+  PP.step(0.016,1000);
+  log.push('u10='+PP.wind[0].toFixed(6)+' dir='+PP.wind[1].toFixed(6)+' g='+PP.wind[3].toFixed(6));
+  log.push('w1[0..3]='+[...PP.w1.slice(0,4)].map(v=>v.toFixed(6)).join(' '));
+  log.push('w2[0..3]='+[...PP.w2.slice(0,4)].map(v=>v.toFixed(6)).join(' '));
+  log.push('w3[0..3]='+[...PP.w3.slice(0,4)].map(v=>v.toFixed(6)).join(' '));
+  log.push('sea drift='+PP.seaMisc[0].toFixed(6)+','+PP.seaMisc[1].toFixed(6)+' th='+PP.seaMisc[2].toFixed(6)+' Us='+PP.seaMisc[3].toFixed(6));
+  log.push('hgt(0,0,1000)='+PP.hgt(0,0,1000).toFixed(9));
+  log.push('hgt(-400,0,1000)='+PP.hgt(-400,0,1000).toFixed(9));
+  PP.at(0,40,0);
+  log.push('at(0,40,0)='+[0,1,2].map(i=>PP.atOut[i].toFixed(6)).join(' ')+' g='+PP.atOut[3].toFixed(6));
+  log.push('MOD[0..3]='+[...PP.MOD.slice(0,4)].join(',')+' MOD_SIZE='+PP.MOD_SIZE);
+  // are the views alive after setObstacles?
+  log.push('views alive: w1[0]='+PP.w1[0]+' (not undefined = ok)');
+  // 5000 steps — performance
+  const t0=performance.now();
+  for(let i=0;i<5000;i++){PP.step(0.016,i*0.016);PP.at(i%800-400,40,i%800-400)}
+  log.push('5000 step+at: '+(performance.now()-t0).toFixed(1)+' ms');
+  log.push('ALL OK');
+}catch(e){log.push('FAIL: '+e.message)}
+document.getElementById('r').textContent=log.join('\n');
+</script>
