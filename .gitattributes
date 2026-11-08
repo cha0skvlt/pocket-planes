@@ -1,0 +1,4 @@
+package-lock.json linguist-generated=true
+PPE-server/dist/** linguist-generated=true
+docs/assets/** linguist-vendored=true
+*.wasm linguist-vendored=true
