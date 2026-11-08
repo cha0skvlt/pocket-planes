@@ -2,6 +2,8 @@
 
 ![Pocket Planes Expedition — title art](docs/assets/title.png)
 
+# ▶ **[Playable demo — piniq.ai/ppe](https://piniq.ai/ppe/)**
+
 **v0.5 Tech Demo** (2026-11-03) — live acceptance passed: WASM core, both bodies, sea/wind/rain/audio verified in the browser.
 
 A game about exploring a pocket dimension: a night-time flooded city you fly through with an FPV
