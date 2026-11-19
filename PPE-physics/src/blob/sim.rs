@@ -620,7 +620,7 @@ fn sub(b: &mut B, dt: f32, t: f32) {
             if b.inp[o + 7] < 0.5 { continue; }
             let c = [b.inp[o], b.inp[o+1], b.inp[o+2]];
             let rr = b.inp[o+3] + b.r[i];
-            let ra = rr * 2.0;
+            let ra = rr * 1.5;
             let d = [pi[0]-c[0], pi[1]-c[1], pi[2]-c[2]];
             let dist = len(d);
             if dist < ra {
@@ -630,7 +630,14 @@ fn sub(b: &mut B, dt: f32, t: f32) {
                 let vn = (vi[0]-vb[0])*nn[0] + (vi[1]-vb[1])*nn[1] + (vi[2]-vb[2])*nn[2];
                 // positive: push the cell away. negative: pull it onto the drone.
                 let push = KC * pen - CC * vn.min(0.0);
-                let adh = if dist > rr { 25.0 * (1.0 - (dist - rr) / (ra - rr)) } else { 0.0 };
+                // Adhesion is a contact effect, not a leash: it dies as soon as the
+                // cell is dragged away from its own clump, so the clump reclaims it
+                // instead of the cell riding the drone forever.
+                let adh = if dist > rr {
+                    let c = b.clump[i] as usize;
+                    let dc = len([pi[0]-b.cc[c][0], pi[1]-b.cc[c][1], pi[2]-b.cc[c][2]]);
+                    if dc > 2.5 * b.cr[c] { 0.0 } else { 15.0 * (1.0 - (dist - rr) / (ra - rr)) }
+                } else { 0.0 };
                 let f = (push - adh).clamp(-25.0, AMAX);
                 for k in 0..3 {
                     a[k] += f * nn[k];
