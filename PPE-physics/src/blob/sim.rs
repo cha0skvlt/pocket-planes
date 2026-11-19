@@ -474,7 +474,7 @@ fn sub(b: &mut B, dt: f32, t: f32) {
     // ---- forces
     let wind = [b.inp[0], b.inp[1], b.inp[2]]; let gust = b.inp[3];
     let water = b.inp[4];
-    let mut cen_acc = [0.0f32; 3]; let mut sp_sum = 0.0f32;
+    let mut cen_acc = [0.0f32; 3]; let mut sp_sum = 0.0f32; let mut vsum = [0.0f32; 3];
     let mut mn = [1e9f32; 3]; let mut mx = [-1e9f32; 3];
     b.body_f = [[0.0; 3]; 2];
     let tnow = t;
@@ -675,6 +675,7 @@ fn sub(b: &mut B, dt: f32, t: f32) {
         b.v[i] = vn;
         b.sp_tmp(i, tip, hs);
         sp_sum += len(vn);
+        for k in 0..3 { vsum[k] += vn[k]; }
         for k in 0..3 { cen_acc[k] += pi[k]; }
     }
     {
@@ -688,6 +689,9 @@ fn sub(b: &mut B, dt: f32, t: f32) {
     }
     // integrate, recall
     let cn = [cen_acc[0] / n as f32, cen_acc[1] / n as f32, cen_acc[2] / n as f32];
+    // true body velocity: b.pv is the controller's, not the mass's, and using it
+    // made every lagging cell look fast.
+    b.vm = [vsum[0] / n as f32, vsum[1] / n as f32, vsum[2] / n as f32];
     for i in 0..n {
         for k in 0..3 { b.p[i][k] += b.v[i][k] * dt; }
         {
@@ -744,14 +748,16 @@ fn color_and_out(b: &mut B, dt: f32, t: f32, w: f32, cn: [f32; 3], mn: [f32; 3],
     let _ = (dt, t, w);
     for i in 0..n {
         let v = b.v[i];
-        let vr = (len([v[0]-b.pv[0], v[1]-b.pv[1], v[2]-b.pv[2]]) / 1.5).min(1.0);
-        // reach along a tendril dominates: the body stays coal, the tips burn.
-        // tip is a static position on a chain: on its own it keeps the tendril tips
-        // glowing forever, even at rest. It only counts while the cell is moving.
-        // tip already carries the chain aim, so it does not need a velocity gate:
-        // a fully extended tendril moving with the body has vr ~ 0 and used to go black.
-        let tip = b.chroma2[i];
-        let act = clampf(0.90 * tip + 0.35 * vr + 0.10 * b.strain[i].min(1.0), 0.0, 1.0);
+        // Speed is the driver. Median relative speed of the colony is ~0.57 local,
+        // so the ramp starts above it: the ambient curl stays coal and only cells
+        // that are genuinely thrown or reaching light up.
+        let sp = len([v[0]-b.vm[0], v[1]-b.vm[1], v[2]-b.vm[2]]);
+        let spd = clampf((sp - 0.80) / 0.50, 0.0, 1.0);
+        // a cell torn off and flying is active by definition, whatever its speed
+        let det = if b.flags[i] & 2 != 0 { 0.62 } else { 0.0 };
+        // the tendril tip amplifies, but only while it is actually moving
+        let tip = b.chroma2[i] * spd;
+        let act = clampf(spd.max(det) + 0.50 * tip, 0.0, 1.0);
         b.chroma[i] = act;
         b.out[8 * NM + 4 * i] = act;
     }

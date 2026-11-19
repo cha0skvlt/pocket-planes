@@ -96,6 +96,7 @@ pub struct B {
     pub pdist: f32,
     pub oside: f32,
     pub caim: [f32; TC],
+    pub vm: [f32; 3],
     pub obc: [u8; 1024],
     pub obl: [[u8; 8]; 1024],
 }
