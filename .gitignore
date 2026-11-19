@@ -8,3 +8,6 @@ old/*
 
 # specs stay local, never in the repo
 PPE-physics/SPEC-*.md
+
+# patch archives stay local
+*.zip

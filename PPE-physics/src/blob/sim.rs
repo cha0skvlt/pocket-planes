@@ -479,6 +479,7 @@ fn sub(b: &mut B, dt: f32, t: f32) {
     b.body_f = [[0.0; 3]; 2];
     let tnow = t;
     let mut tears = 0.0f32;
+    let mut hitf = [[0.0f32; 3]; 2]; let mut hitn = [0.0f32; 2];
     for i in 0..n {
         let pi = b.p[i]; let vi = b.v[i];
         let rhoi = b.rho[i].clamp(0.1 * b.rho0, 8.0 * b.rho0);
@@ -644,28 +645,33 @@ fn sub(b: &mut B, dt: f32, t: f32) {
                     // reaction on the drone: -f*nn*m_i / M_d, M_d = 1 (thrust is an acceleration)
                     b.body_f[bi][k] -= f * nn[k] * b.m[i];
                 }
-                // Active (red) cells hit: they hand over their own momentum along
-                // their own direction of travel. Only while moving into the drone.
-                // chroma is last frame's activity, one frame stale, which is fine.
-                let act = b.chroma[i];
-                if dist < rr && act > 0.38 {
-                    let sp = len(vi);
-                    let vn2 = vi[0]*nn[0] + vi[1]*nn[1] + vi[2]*nn[2];
-                    if sp > 1e-3 && vn2 < 0.0 {
-                        // m_i/M_d = 0.16, so the hit must stay small in cell units:
-                        // 8 m/s^2 on a cell is ~36 m/s^2 on the drone, at the clamp.
-                        let hit = (5.0 * act * sp).min(8.0);
-                        for k in 0..3 {
-                            let u = hit * vi[k] / sp;
-                            a[k] -= u;                       // the cell is stopped by the impact
-                            b.body_f[bi][k] += u * b.m[i];   // the drone takes the hit
-                        }
+                // Impact: two-body collision along the contact normal, restitution e,
+                // Coulomb friction on the tangent. Only red cells (lvl>=1), only on first
+                // approach (cooldown), only above a relative-speed threshold.
+                let vr = [vi[0]-vb[0], vi[1]-vb[1], vi[2]-vb[2]];
+                let vin = -(vr[0]*nn[0] + vr[1]*nn[1] + vr[2]*nn[2]);
+                if dist < rr && b.lvl[i] >= 1 && b.hitcd[i] <= 0.0 && vin > 0.35 {
+                    let md = 1.0f32; let mc = b.m[i];
+                    let mu = mc * md / (mc + md);
+                    let jn = mu * (1.0 + 0.4) * vin;
+                    let vt = [vr[0] + vin*nn[0], vr[1] + vin*nn[1], vr[2] + vin*nn[2]];
+                    let vtl = len(vt);
+                    let jt = if vtl > 1e-5 { (0.3 * jn).min(mu * vtl) } else { 0.0 };
+                    let th = if vtl > 1e-5 { [vt[0]/vtl, vt[1]/vtl, vt[2]/vtl] } else { [0.0; 3] };
+                    for k in 0..3 {
+                        let j = jn * nn[k] - jt * th[k];          // impulse on the cell
+                        jv[k] += j / mc;
+                        hitf[bi][k] -= j / dt;                    // equal and opposite on drone (M_d=1)
                     }
+                    hitn[bi] += 1.0;
+                    b.hitcd[i] = 0.2;
+                    b.chroma[i] *= 0.5;                           // energy given up
                 }
             }
         }
         // age & clamp
         b.age[i] += dt;
+        b.hitcd[i] = (b.hitcd[i] - dt).max(0.0);
         let al = len(a);
         if al > AMAX { for k in 0..3 { a[k] *= AMAX / al; } }
         let mut vn = [vi[0] + a[0]*dt + jv[0], vi[1] + a[1]*dt + jv[1], vi[2] + a[2]*dt + jv[2]];
@@ -726,6 +732,7 @@ fn sub(b: &mut B, dt: f32, t: f32) {
         if b.detach[i] > 0.0 { b.detach[i] -= dt; if b.detach[i] <= 0.0 { b.flags[i] &= !2; } }
         for k in 0..3 { mn[k] = mn[k].min(b.p[i][k]); mx[k] = mx[k].max(b.p[i][k]); }
     }
+    for bi in 0..2 { let nrm = 1.0 / hitn[bi].max(1.0).sqrt(); for k in 0..3 { b.body_f[bi][k] += hitf[bi][k] * nrm; } }
     for k in 0..2 {
         let f = b.body_f[k]; let l = len(f);
         if l > 40.0 { for a in 0..3 { b.body_f[k][a] *= 40.0 / l; } }
@@ -745,20 +752,36 @@ fn color_and_out(b: &mut B, dt: f32, t: f32, w: f32, cn: [f32; 3], mn: [f32; 3],
     let n = b.n;
     // activity, not geometry: a cell glows because it moves and strains, not because
     // it sits at a certain place on a chain. no diffusion: the body must flash, not blur.
-    let _ = (dt, t, w);
+    let _ = (t, w);
+    // act: dimensionless, scale-free. Speeds are normalised by the SPH sound speed
+    // c_s = sqrt(KP) (a property of the fluid, not of N or the histogram), and measured
+    // relative to the cell's own clump (cv): being carried by the flow is zero work,
+    // deforming/reaching/tearing is work.
+    let cs = KP.sqrt();
+    let att = 1.0 - (-dt / 0.04).exp(); let dec = 1.0 - (-dt / 0.25).exp();
     for i in 0..n {
-        let v = b.v[i];
-        // Speed is the driver. Median relative speed of the colony is ~0.57 local,
-        // so the ramp starts above it: the ambient curl stays coal and only cells
-        // that are genuinely thrown or reaching light up.
-        let sp = len([v[0]-b.vm[0], v[1]-b.vm[1], v[2]-b.vm[2]]);
-        let spd = clampf((sp - 0.80) / 0.50, 0.0, 1.0);
-        // a cell torn off and flying is active by definition, whatever its speed
-        let det = if b.flags[i] & 2 != 0 { 0.62 } else { 0.0 };
-        // the tendril tip amplifies, but only while it is actually moving
-        let tip = b.chroma2[i] * spd;
-        let act = clampf(spd.max(det) + 0.50 * tip, 0.0, 1.0);
+        let c = b.clump[i] as usize; let v = b.v[i];
+        let mrel = len([v[0]-b.cv[c][0], v[1]-b.cv[c][1], v[2]-b.cv[c][2]]) / cs;
+        let mb = len([v[0]-b.vm[0], v[1]-b.vm[1], v[2]-b.vm[2]]) / cs;
+        let mut hm = 1.0f32;
+        for s in 0..4 { if b.bond[i][s] as usize != i { hm = hm.min(b.health[i][s]); } }
+        // Sparse, not a wash: the thresholds sit above the ambient flow, the tip is
+        // sharpened to sp^4 and gated by its own motion, so only real events light up.
+        let a_rel = smooth(1.2, 2.2, mrel);
+        let a_fl = if b.flags[i] & 2 != 0 { 0.75 * smooth(0.08, 0.4, mb) } else { 0.0 };
+        let a_fr = if b.flags[i] & 4 != 0 { 0.30 * (1.0 - hm) } else { 0.0 };
+        let a_st = 0.25 * smooth(0.6, 1.2, b.strain[i]);
+        let a_tip = 0.90 * b.chroma2[i] * b.chroma2[i] * smooth(0.15, 0.45, mb);
+        let raw = clampf(a_rel.max(a_fl).max(a_fr) + a_st + a_tip, 0.0, 1.0);
+        let cur = b.chroma[i];
+        let act = cur + (raw - cur) * if raw > cur { att } else { dec };
         b.chroma[i] = act;
+        // hysteresis: up at 0.38/0.52/0.68, down 0.06 lower
+        let up = [0.55f32, 0.70, 0.85];
+        let mut l = b.lvl[i] as usize;
+        while l < 3 && act > up[l] { l += 1; }
+        while l > 0 && act < up[l - 1] - 0.06 { l -= 1; }
+        b.lvl[i] = l as u8;
         b.out[8 * NM + 4 * i] = act;
     }
     for i in 0..n {
@@ -768,10 +791,12 @@ fn color_and_out(b: &mut B, dt: f32, t: f32, w: f32, cn: [f32; 3], mn: [f32; 3],
         // value is lifted by ~1/2.2. The rest of the game is authored dark (ocean base
         // is 0.006). Values here must live in the same space, or 0.03 reads as grey
         // and a bright red reads as beige.
-        let (col, em) = if act < 0.38 { ([0.006f32, 0.004, 0.004], 0.0f32) }
-            else if act < 0.52 { ([0.100f32, 0.004, 0.004], 0.25) }
-            else if act < 0.68 { ([0.350f32, 0.008, 0.008], 0.45) }
-            else { ([0.750f32, 0.012, 0.012], 0.60) };
+        let lv = b.lvl[i] as usize;
+        let cols = [[0.006f32, 0.004, 0.004], [0.100, 0.004, 0.004], [0.350, 0.008, 0.008], [0.750, 0.012, 0.012]];
+        let ems = [0.0f32, 0.25, 0.45, 0.60];
+        let lo = [0.0f32, 0.55, 0.70, 0.85]; let hi = [0.55f32, 0.70, 0.85, 1.0];
+        let fr = clampf((act - lo[lv]) / (hi[lv] - lo[lv]), 0.0, 1.0);
+        let (col, em) = (cols[lv], if lv == 0 { 0.0 } else { ems[lv] * (0.8 + 0.4 * fr) });
         let mut hm = 1.0f32;
         for s in 0..4 { if b.bond[i][s] as usize != i { hm = hm.min(b.health[i][s]); } }
         let o = &mut b.out;

@@ -97,6 +97,8 @@ pub struct B {
     pub oside: f32,
     pub caim: [f32; TC],
     pub vm: [f32; 3],
+    pub lvl: [u8; NM],
+    pub hitcd: [f32; NM],
     pub obc: [u8; 1024],
     pub obl: [[u8; 8]; 1024],
 }
