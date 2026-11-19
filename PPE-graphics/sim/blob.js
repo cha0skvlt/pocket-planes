@@ -65,19 +65,22 @@ export function blobCollide(pos, vel, radius, origin, scale) {
   for (let i = 0, n = BLOB.N; i < n; i++) {
     const j = i * 4;
     const dx = lx - P[j], dy = ly - P[j + 1], dz = lz - P[j + 2];
-    const rr = P[j + 3] * 1.1 + lr;
+    const rr = P[j + 3] + lr;
     const d2 = dx * dx + dy * dy + dz * dz;
     if (d2 >= rr * rr) continue;
     if (d2 < 1e-12) { ly += rr; continue; } // dead centre: no normal, eject upward
     const d = Math.sqrt(d2);
     const nx = dx / d, ny = dy / d, nz = dz / d;
-    const pen = rr - d;
+    // soft push-out: a hard one stops the drone at the outer shell and it never
+    // gets inside. Half the penetration per frame lets it sink in while the
+    // viscosity of the medium does the slowing.
+    const pen = (rr - d) * 0.5;
     lx += nx * pen; ly += ny * pen; lz += nz * pen;
     const vn = vel.x * nx + vel.y * ny + vel.z * nz;
     if (vn < 0) {
-      vel.x -= 1.25 * vn * nx;
-      vel.y -= 1.25 * vn * ny;
-      vel.z -= 1.25 * vn * nz;
+      vel.x -= 1.10 * vn * nx;
+      vel.y -= 1.10 * vn * ny;
+      vel.z -= 1.10 * vn * nz;
       s += Math.min(1, Math.abs(vn) * 0.03);
     }
   }
@@ -85,6 +88,28 @@ export function blobCollide(pos, vel, radius, origin, scale) {
   pos.y = origin.y + ly * scale;
   pos.z = origin.z + lz * scale;
   return s;
+}
+
+// Viscosity of the medium: the drone inside the colony is slowed by the number of
+// cells it is in contact with. This is what stops it from flying straight out.
+// damp < 1 is the softlock escape: after 6 s of contact the drag fades out.
+export function blobDrag(pos, vel, radius, origin, scale, dt, damp = 1) {
+  const P = BLOB.pos;
+  if (!P) return 0;
+  const k = 1 / scale;
+  const lx = (pos.x - origin.x) * k, ly = (pos.y - origin.y) * k, lz = (pos.z - origin.z) * k;
+  const lr = radius * k;
+  let n = 0;
+  for (let i = 0, N = BLOB.N; i < N; i++) {
+    const j = i * 4;
+    const dx = lx - P[j], dy = ly - P[j + 1], dz = lz - P[j + 2];
+    const rr = P[j + 3] + lr;
+    if (dx * dx + dy * dy + dz * dz < rr * rr) n++;
+  }
+  if (n === 0) return 0;
+  const f = Math.exp(-Math.min(8, 1.5 * n) * damp * dt);
+  vel.x *= f; vel.y *= f; vel.z *= f;
+  return n;
 }
 
 // Obstacles: up to 64 AABBs in local units. inp[24+8*o] = x,z,hw,hd,top,0,0,0; inp[536] = count.

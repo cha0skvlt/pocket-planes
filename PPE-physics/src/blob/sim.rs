@@ -13,7 +13,7 @@ const KB: f32 = 60.0;
 const KN_: f32 = 20.0;
 const CN_: f32 = 6.0;
 const KT: f32 = 25.0;
-const KC: f32 = 300.0;
+const KC: f32 = 150.0;
 const CC: f32 = 8.0;
 const A_CURL: f32 = 3.0;
 const VMAX: f32 = 25.0;
@@ -603,22 +603,31 @@ fn sub(b: &mut B, dt: f32, t: f32) {
         for k in 0..3 { a[k] += 0.012 * (1.0 + gust) * dl * du[k]; }
         a[1] -= 9.81 * 0.15;
         if pi[1] < water { a[1] += 30.0 * (water - pi[1]) - 3.0 * vi[1]; }
-        // bodies
+        // bodies: contact (push away) + adhesion (pull the cell onto the drone).
+        // The body is sparse (~4 m between cells), so the capsule radius is 1.4 m,
+        // not the drone's 0.5 m: otherwise the drone slips between cells.
         for bi in 0..2 {
             let o = 8 + bi * 8;
             if b.inp[o + 7] < 0.5 { continue; }
             let c = [b.inp[o], b.inp[o+1], b.inp[o+2]];
             let rr = b.inp[o+3] + b.r[i];
+            let ra = rr * 2.0;
             let d = [pi[0]-c[0], pi[1]-c[1], pi[2]-c[2]];
             let dist = len(d);
-            if dist < rr + 0.1 {
+            if dist < ra {
                 let nn = if dist < 1e-4 { [0.0, 1.0, 0.0] } else { [d[0]/dist, d[1]/dist, d[2]/dist] };
                 let pen = (rr - dist).max(0.0);
                 let vb = [b.inp[o+4], b.inp[o+5], b.inp[o+6]];
                 let vn = (vi[0]-vb[0])*nn[0] + (vi[1]-vb[1])*nn[1] + (vi[2]-vb[2])*nn[2];
-                let mag = KC * pen - CC * vn.min(0.0);
-                let mag = mag.min(AMAX);
-                for k in 0..3 { a[k] += mag * nn[k]; b.body_f[bi][k] -= mag * nn[k] * b.m[i] / 0.16 * 0.01; }
+                // positive: push the cell away. negative: pull it onto the drone.
+                let push = KC * pen - CC * vn.min(0.0);
+                let adh = if dist > rr { 25.0 * (1.0 - (dist - rr) / (ra - rr)) } else { 0.0 };
+                let f = (push - adh).clamp(-25.0, AMAX);
+                for k in 0..3 {
+                    a[k] += f * nn[k];
+                    // reaction on the drone: -f*nn*m_i / M_d, M_d = 1 (thrust is an acceleration)
+                    b.body_f[bi][k] -= f * nn[k] * b.m[i];
+                }
             }
         }
         // age & clamp
