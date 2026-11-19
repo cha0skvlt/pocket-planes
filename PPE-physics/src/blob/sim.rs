@@ -440,6 +440,15 @@ fn sub(b: &mut B, dt: f32, t: f32) {
                 b.cp[c][m][a] += 0.12 * (tgt - b.cp[c][m][a]);
             }
         }
+        // aim: how much this chain points where the creature is going. The tip of a
+        // chain that reaches is the active part; a drooping chain is not.
+        let aim_dir = if b.pst == 2 { toT } else { norm(b.pv) };
+        let d = [b.cp[c][MP-1][0]-b.cp[c][0][0], b.cp[c][MP-1][1]-b.cp[c][0][1], b.cp[c][MP-1][2]-b.cp[c][0][2]];
+        let dl = len(d);
+        b.caim[c] = if dl > 1e-4 {
+            let u = [d[0]/dl, d[1]/dl, d[2]/dl];
+            clampf(u[0]*aim_dir[0] + u[1]*aim_dir[1] + u[2]*aim_dir[2], 0.0, 1.0)
+        } else { 0.0 };
     }
     if b.frame % 4 == 0 { assign_nodes(b, false); }
     // ---- neighbors + density
@@ -566,7 +575,7 @@ fn sub(b: &mut B, dt: f32, t: f32) {
                 tg[k] = b.cp[ch][m0][k] * (1.0 - fr) + b.cp[ch][m0+1][k] * fr + b.off[i][k] * tr;
                 a[k] += KT * (tg[k] - pi[k]) - 8.0 * vi[k];
             }
-            tip = b.sp[i] * b.sp[i]; hs = b.sp[i];
+            tip = b.sp[i] * b.sp[i] * b.caim[ch]; hs = b.sp[i];
         } else {
             let nk = b.node[i] as usize;
             let qn = b.q[nk];
@@ -732,8 +741,10 @@ fn color_and_out(b: &mut B, dt: f32, t: f32, w: f32, cn: [f32; 3], mn: [f32; 3],
         // reach along a tendril dominates: the body stays coal, the tips burn.
         // tip is a static position on a chain: on its own it keeps the tendril tips
         // glowing forever, even at rest. It only counts while the cell is moving.
-        let tip = b.chroma2[i] * (0.25 + 0.75 * vr);
-        let act = clampf(0.30 * vr + 0.10 * b.strain[i].min(1.0) + 0.60 * tip, 0.0, 1.0);
+        // tip already carries the chain aim, so it does not need a velocity gate:
+        // a fully extended tendril moving with the body has vr ~ 0 and used to go black.
+        let tip = b.chroma2[i];
+        let act = clampf(0.90 * tip + 0.35 * vr + 0.10 * b.strain[i].min(1.0), 0.0, 1.0);
         b.chroma[i] = act;
         b.out[8 * NM + 4 * i] = act;
     }
