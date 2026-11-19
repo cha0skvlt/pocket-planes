@@ -174,6 +174,8 @@ async function boot(){
    } // human active: keep the last human camera exactly where it was
   }
   atmo.update(tw);T.value=tw;city.update(tw,sdt);
+  // the FPV camera sits at the body centre: keep it out of the walls
+  city.camPush(cam.position,0.6);
   R.render(S,cam);raf=requestAnimationFrame(frame)}
  frame();
 

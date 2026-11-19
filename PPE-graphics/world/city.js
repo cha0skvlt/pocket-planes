@@ -50,5 +50,18 @@ function update(t,dt){
   const tg=.8+Math.max(-.35,Math.min(.9,v*.2));b.sy=b.sy===undefined?.8:b.sy+(tg-b.sy)*k;b.fm.position.set(b.x,h+3,b.z);b.fm.scale.y=b.sy}
  beac.forEach((m,i)=>m.color.setScalar(Math.sin(t*3+i*2.1)>.55?1:.05).multiply(BCOL));
 }
-return {bl,beac,collide,update};
+// Camera push-out: the FPV camera sits exactly at the body centre, and collide()
+// has no margin, so the near plane pokes through the wall the moment the body
+// touches it. Push the camera out of every AABB by m before rendering.
+function camPush(p, m){
+ for(const b of bl){
+  const dx=p.x-b.x, dz=p.z-b.z;
+  const px=b.hw+m-Math.abs(dx), pz=b.hd+m-Math.abs(dz), py=b.top+m-p.y;
+  if(px<=0||pz<=0||py<=0) continue;
+  if(py<px&&py<pz) p.y+=py;
+  else if(px<pz) p.x+=Math.sign(dx||1)*px;
+  else p.z+=Math.sign(dz||1)*pz;
+ }
+}
+return {bl,beac,collide,update,camPush};
 }
