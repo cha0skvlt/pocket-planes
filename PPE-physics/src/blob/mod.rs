@@ -29,4 +29,6 @@ pub extern "C" fn pp_blob_impulse(x: f32, y: f32, z: f32, r: f32, s: f32) {
     }
 }
 #[no_mangle]
+pub extern "C" fn pp_blob_set_target(slot: u32) { st().tslot = slot.min(1); }
+#[no_mangle]
 pub extern "C" fn pp_blob_abi_version() -> u32 { 1 }

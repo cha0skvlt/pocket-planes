@@ -208,20 +208,24 @@ fn sub(b: &mut B, dt: f32, t: f32) {
     let kb = KB * pr[4];
     let rt = pr[5];
     // ---- pursuit
-    let ptg = [b.inp[8], b.inp[9], b.inp[10]];
-    let act = b.inp[15] > 0.5;
+    let to = 8 + 8 * b.tslot as usize;
+    let ptg = [b.inp[to], b.inp[to+1], b.inp[to+2]];
+    let act = b.inp[to+7] > 0.5;
     let mut cen = b.center;
     let pdv = [ptg[0]-cen[0], ptg[1]-cen[1], ptg[2]-cen[2]];
     let pd = if act { len(pdv) } else { 1e3 };
     b.pdist = pd;
     let rbody = 1.1f32;
-    let lis = |tt: f32| [0.8*(0.11*tt + ph[0]).sin(), 0.4*(0.1556*tt + ph[1]).sin(), 0.8*(0.2257*tt + ph[2]).sin()];
+    // the idle wander is damped while hunting, otherwise the body drifts upward
+    // on its own Lissajous instead of going at the drone.
+    let lw = 1.0 - 0.7 * b.aggro;
+    let lis = |tt: f32| [0.8*(0.11*tt + ph[0]).sin()*lw, 0.4*(0.1556*tt + ph[1]).sin()*lw, 0.8*(0.2257*tt + ph[2]).sin()*lw];
     let ps0 = b.pst;
     match b.pst {
-        0 => { if pd < 5.0 { b.pst = 1; b.ptimer = b.rng.range(0.8, 1.6); } }
+        0 => { if pd < 7.0 { b.pst = 1; b.ptimer = b.rng.range(0.8, 1.6); } }
         1 => {
             b.ptimer -= dt;
-            if pd > 7.86 { b.pst = 0; }
+            if pd > 10.5 { b.pst = 0; }
             else if b.ptimer <= 0.0 {
                 b.pst = 2; b.lose_t = 0.0; b.brk = 0.0;
                 if b.form != 1 && b.form != 2 { let f = 1 + b.rng.below(2); set_form(b, f, 1.0); }
@@ -229,19 +233,59 @@ fn sub(b: &mut B, dt: f32, t: f32) {
             }
         }
         2 => {
-            if pd > 7.86 { b.lose_t += dt; } else { b.lose_t = 0.0; }
+            if pd > 10.5 { b.lose_t += dt; } else { b.lose_t = 0.0; }
             if b.lose_t > 3.0 || !act { b.pst = 3; b.ptimer = 2.0; }
-            if b.brk > 0.0 { b.brk -= dt; } else if w > 0.8 && b.rng.f() < dt * 0.12 { b.brk = b.rng.range(1.0, 2.0); }
+            if b.brk > 0.0 { b.brk -= dt; }
         }
         _ => { b.ptimer -= dt; if b.ptimer <= 0.0 { b.pst = 0; } }
     }
     if b.pst == 0 && ps0 != 0 { let l = lis(t); b.home = [cen[0]-l[0], cen[1]-l[1], cen[2]-l[2]]; }
     let moving = b.pst == 2 && b.brk <= 0.0;
-    let chase = moving || b.pst == 1;
-    b.pw += ((if chase { 1.0 } else { 0.0 }) - b.pw) * clampf(dt / 0.5, 0.0, 1.0);
+    // tendrils reach from the first notice, not only once pursuing: that is the
+    // visible "interest" the player should see before the body even moves.
+    b.pw += ((if b.pst == 1 || b.pst == 2 { 1.0 } else { 0.0 }) - b.pw) * clampf(dt / 0.5, 0.0, 1.0);
     let vmax = 0.643 * (0.75 + 0.25 * w);
     let amax = 0.214f32;
     let toT = if act { norm(pdv) } else { [1.0, 0.0, 0.0] };
+    // ---- brain: aggro, encircle, grab, squeeze, lead
+    if pd < 7.0 && b.aggro < 1.0 { b.aggro = (b.aggro + dt / 1.5).min(1.0); }
+    else if pd > 10.5 { b.aggro = (b.aggro - dt / 2.0).max(0.0); }
+    let engage = b.pst == 2 && b.brk <= 0.0;
+    // encircle starts at ~73 m, grab at ~112 m: the body must visibly open up
+    // long before it is on top of the drone.
+    let et = if engage { b.aggro * smooth(2.6, 1.4, pd) } else { 0.0 };
+    let gt = if engage { b.aggro * smooth(4.0, 2.0, pd) } else { 0.0 };
+    let sqt = if engage { b.aggro * 0.6 * smooth(0.8, 0.5, pd) } else { 0.0 };
+    b.enc += (et - b.enc) * clampf(dt / 0.6, 0.0, 1.0);
+    b.grab += (gt - b.grab) * clampf(dt / 0.4, 0.0, 1.0);
+    b.sqz += (sqt - b.sqz) * clampf(dt / 0.5, 0.0, 1.0);
+    let mut ld = [ptg[0] + b.inp[to+4] * 0.6, ptg[1] + b.inp[to+5] * 0.6, ptg[2] + b.inp[to+6] * 0.6];
+    {
+        let o = [ld[0]-ptg[0], ld[1]-ptg[1], ld[2]-ptg[2]]; let ol = len(o);
+        if ol > 0.535 { for k in 0..3 { ld[k] = ptg[k] + o[k] * 0.535 / ol; } }
+    }
+    let mut gsel = [-1i8; TC]; let mut gpt = [[0.0f32; 3]; 3];
+    if b.grab > 0.05 {
+        let ax = toT;
+        let mut e1 = [ax[2], 0.0, -ax[0]];
+        if len(e1) < 1e-3 { e1 = [1.0, 0.0, 0.0]; }
+        let e1 = norm(e1);
+        let e2 = [ax[1]*e1[2]-ax[2]*e1[1], ax[2]*e1[0]-ax[0]*e1[2], ax[0]*e1[1]-ax[1]*e1[0]];
+        let rg = 1.2 * b.inp[to+3] + 0.5 * 0.69;
+        for j in 0..3 {
+            let ang = 2.0943951f32 * j as f32;
+            for a in 0..3 { gpt[j][a] = ld[a] + rg * (0.9428 * (ang.cos() * e1[a] + ang.sin() * e2[a]) + 0.3333 * ax[a]); }
+            let mut bc = usize::MAX; let mut bd = 1e9f32;
+            for c in 0..TC {
+                if gsel[c] >= 0 || b.cw[c] <= 0.05 { continue; }
+                let tp = b.cp[c][MP-1];
+                let dd = [tp[0]-gpt[j][0], tp[1]-gpt[j][1], tp[2]-gpt[j][2]];
+                let dl = dd[0]*dd[0] + dd[1]*dd[1] + dd[2]*dd[2];
+                if dl < bd { bd = dl; bc = c; }
+            }
+            if bc != usize::MAX { gsel[bc] = j as i8; }
+        }
+    }
     let mut ad = [0.0f32; 3];
     if moving {
         if pd < 0.66 {
@@ -252,7 +296,7 @@ fn sub(b: &mut B, dt: f32, t: f32) {
             for k in 0..3 { ad[k] = 0.9 * (ptg[k]-cen[k]) - 1.6 * b.pv[k]; }
         }
     } else if b.pst == 1 || b.pst == 3 {
-        for k in 0..3 { ad[k] = -3.0 * b.pv[k]; }
+        for k in 0..3 { ad[k] = -1.0 * b.pv[k]; }
     } else {
         let l = lis(t);
         for k in 0..3 { ad[k] = 0.9 * (b.home[k] + l[k] - cen[k]) - 1.6 * b.pv[k]; }
@@ -266,8 +310,8 @@ fn sub(b: &mut B, dt: f32, t: f32) {
     for o in 0..nob {
         let ob = 24 + 8 * o;
         let (bx, bz, hw, hd, top) = (b.inp[ob], b.inp[ob+1], b.inp[ob+2], b.inp[ob+3], b.inp[ob+4]);
-        let x0 = ((bx - hw - 0.5) / 16.0).floor() as i32; let x1 = ((bx + hw + 0.5) / 16.0).floor() as i32;
-        let z0 = ((bz - hd - 0.5) / 16.0).floor() as i32; let z1 = ((bz + hd + 0.5) / 16.0).floor() as i32;
+        let x0 = ((bx - hw - 0.5) / 2.0).floor() as i32; let x1 = ((bx + hw + 0.5) / 2.0).floor() as i32;
+        let z0 = ((bz - hd - 0.5) / 2.0).floor() as i32; let z1 = ((bz + hd + 0.5) / 2.0).floor() as i32;
         for ix in x0..=x1 { for iz in z0..=z1 {
             let k = ohk(ix, iz);
             if b.obc[k] < 8 { b.obl[k][b.obc[k] as usize] = o as u8; b.obc[k] += 1; }
@@ -275,12 +319,14 @@ fn sub(b: &mut B, dt: f32, t: f32) {
         let c = [cen[0].clamp(bx-hw, bx+hw), cen[1].min(top), cen[2].clamp(bz-hd, bz+hd)];
         let dd = [cen[0]-c[0], cen[1]-c[1], cen[2]-c[2]];
         let dl = len(dd);
-        let rr = rbody + 0.4;
+        // the body is 56 m, the gaps between buildings are ~30 m: a full-radius
+        // keep-out made it bounce off the city instead of flowing through it.
+        let rr = rbody * 0.5 + 0.2;
         if dl < rr {
             let nn = if dl < 1e-4 { [0.0, 1.0, 0.0] } else { [dd[0]/dl, dd[1]/dl, dd[2]/dl] };
             let pen = rr - dl;
             contact = true;
-            for k in 0..3 { aa[k] += 3.0 * pen * nn[k]; }
+            for k in 0..3 { aa[k] += 1.5 * pen * nn[k]; }
             // Slide along the wall in the direction the body is already moving;
             // head-on, pick a side once and keep it. The old sign was inverted, so
             // the tangential term damped the slide instead of driving it.
@@ -292,10 +338,15 @@ fn sub(b: &mut B, dt: f32, t: f32) {
                 }
                 b.oside
             };
-            let tm = 1.2 * (len(b.pv) + 2.0 * pen);
+            let tm = 2.0 * (len(b.pv) + 2.0 * pen);
             aa[0] += nn[2] * sg * tm; aa[2] -= nn[0] * sg * tm;
         }
-        if dl < rr * 2.0 && top - cen[1] < 0.5 * rbody { aa[1] += 0.7 * 3.0 * (0.5 * rbody - (top - cen[1])).max(0.1); }
+        // Only while the body is below the roof and in contact. The old term grew as
+        // the body climbed (top - cen[1] went negative), so it accelerated upward
+        // forever and left the city instead of chasing the drone.
+        if dl < rr && cen[1] < top && top - cen[1] < 0.5 * rbody {
+            aa[1] += 0.7 * 3.0 * (0.5 * rbody - (top - cen[1])).max(0.0);
+        }
     }
     if !contact { b.oside = 0.0; }
     for k in 0..3 { ad[k] += aa[k]; }
@@ -311,7 +362,8 @@ fn sub(b: &mut B, dt: f32, t: f32) {
         set_form(b, f, 1.0);
         if b.pst == 2 { b.next_form = t + b.rng.range(4.0, 10.0); } else { b.next_form = t + b.rng.range(8.0, 20.0); }
     }
-    if t >= b.next_burst && b.ncl > 8 {
+    // bursts are the jerks: only while hunting. At rest the body just turns.
+    if t >= b.next_burst && b.ncl > 8 && b.aggro > 0.3 {
         let mut bm = 0usize; let mut bs = -1.0f32;
         for _ in 0..24 {
             let i = b.rng.below(n as u32) as usize;
@@ -365,6 +417,13 @@ fn sub(b: &mut B, dt: f32, t: f32) {
             cen[1] + d[1]*rad + 0.3*(wf[1]*t + 2.0*kf).sin(),
             cen[2] + d[2]*rad + 0.3*(wf[2]*t + 3.0*kf).sin(),
         ];
+        if b.enc > 0.3 {
+            let mx = smooth(0.3, 0.6, b.enc);
+            let shift = 0.35 * b.enc; let rs = 1.0 - 0.45 * b.enc;
+            let ring = [cen[0] + (1.0 + shift) * (ld[0]-cen[0]), cen[1] + (1.0 + shift) * (ld[1]-cen[1]), cen[2] + (1.0 + shift) * (ld[2]-cen[2])];
+            let rdn = 0.69 * rs * (1.0 + 0.5 * w * (0.9 * t + kf * 1.7).sin());
+            for a in 0..3 { let nt = ring[a] + rdn * base[a]; tg[a] += (nt - tg[a]) * mx; }
+        }
         let mut want = [0.0f32; 3];
         for bi in 0..2 {
             if near[bi] == k {
@@ -389,6 +448,12 @@ fn sub(b: &mut B, dt: f32, t: f32) {
         let base = [b.q[k][0]+dir[0]*b.qr[k], b.q[k][1]+dir[1]*b.qr[k], b.q[k][2]+dir[2]*b.qr[k]];
         b.cp[c][0] = base;
         let seg = 0.2 * b.cw[c] + 0.005;
+        let mut ctg = ptg; let mut gsc = 0.0f32;
+        if gsel[c] >= 0 && b.grab > 0.05 {
+            let g = b.grab; let q = gpt[gsel[c] as usize];
+            for a in 0..3 { ctg[a] = ptg[a] + (q[a] - ptg[a]) * g; }
+            gsc = g;
+        }
         for m in 1..MP {
             let cur = b.cp[c][m]; let prv = b.cpp[c][m];
             let mf = m as f32; let cf = c as f32;
@@ -399,8 +464,8 @@ fn sub(b: &mut B, dt: f32, t: f32) {
             ac[2] += amp * (1.3*t + cf*0.9 + mf*0.7).sin();
             ac[0] += b.inp[0] * 0.2; ac[1] += b.inp[1] * 0.2; ac[2] += b.inp[2] * 0.2;
             if b.pw > 0.05 && act {
-                let sc = b.pw * (mf / 5.0);
-                for a in 0..3 { ac[a] += sc * (2.2 * (ptg[a] - cur[a]) - 1.8 * (cur[a] - prv[a]) * idt); }
+                let sc = b.pw * (mf / 5.0) * (1.0 + 2.5 * gsc);
+                for a in 0..3 { ac[a] += sc * (2.2 * (ctg[a] - cur[a]) - 1.8 * (cur[a] - prv[a]) * idt); }
                 if m == MP - 1 {
                     for c2 in 0..TC {
                         if c2 != c && b.cw[c2] > 0.05 {
@@ -409,7 +474,7 @@ fn sub(b: &mut B, dt: f32, t: f32) {
                             if dl < 0.35 && dl > 1e-4 { for a in 0..3 { ac[a] += dd[a] / dl * 12.0 * (0.35 - dl) / 0.35; } }
                         }
                     }
-                    if pd < 0.55 {
+                    if pd < 0.55 && gsc <= 0.0 {
                         let tn = norm([cur[2]-ptg[2], 0.0, -(cur[0]-ptg[0])]);
                         for a in 0..3 { ac[a] += tn[a] * 3.0 * b.pw; }
                     }
@@ -605,7 +670,8 @@ fn sub(b: &mut B, dt: f32, t: f32) {
         // curl
         let sc = 0.9f32;
         let cu = curl(&[pi[0]*sc, pi[1]*sc, pi[2]*sc], tnow, &ph);
-        let ac = A_CURL * (0.4 + 1.2 * w);
+        // an amoeba at rest is calm, hunting is agitated: the current scales with aggro.
+        let ac = A_CURL * (0.30 + 0.70 * b.aggro) * (0.4 + 1.2 * w);
         for k in 0..3 { a[k] += ac * cu[k] * if ch < TC && b.cw[ch] > 0.05 { 0.3 } else { 1.0 }; }
         // wind, buoyant gravity
         let du = [wind[0]-vi[0], wind[1]-vi[1], wind[2]-vi[2]];
@@ -621,6 +687,8 @@ fn sub(b: &mut B, dt: f32, t: f32) {
             if b.inp[o + 7] < 0.5 { continue; }
             let c = [b.inp[o], b.inp[o+1], b.inp[o+2]];
             let rr = b.inp[o+3] + b.r[i];
+            // the squeeze needs reach: at 1.5x the far side of the drone is outside
+            // the adhesion band and contributes nothing, so the net pushes outward.
             let ra = rr * 1.5;
             let d = [pi[0]-c[0], pi[1]-c[1], pi[2]-c[2]];
             let dist = len(d);
@@ -630,14 +698,22 @@ fn sub(b: &mut B, dt: f32, t: f32) {
                 let vb = [b.inp[o+4], b.inp[o+5], b.inp[o+6]];
                 let vn = (vi[0]-vb[0])*nn[0] + (vi[1]-vb[1])*nn[1] + (vi[2]-vb[2])*nn[2];
                 // positive: push the cell away. negative: pull it onto the drone.
-                let push = KC * pen - CC * vn.min(0.0);
+                let mut push = KC * pen - CC * vn.min(0.0);
                 // Adhesion is a contact effect, not a leash: it dies as soon as the
                 // cell is dragged away from its own clump, so the clump reclaims it
                 // instead of the cell riding the drone forever.
+                let tcn = norm([b.center[0]-c[0], b.center[1]-c[1], b.center[2]-c[2]]);
+                // sign: a cell on the centre side must pull HARDER, so the net
+                // reaction on the drone points at cen. With a minus it pulled away.
+                let dct = nn[0]*tcn[0] + nn[1]*tcn[1] + nn[2]*tcn[2];
+                let sqf = (1.0 + b.sqz * dct).max(0.0);
+                // the centre side must also push LESS, otherwise the hard contact
+                // (KC=150) beats the soft adhesion (15) and the net points outward.
+                push *= (1.0 - b.sqz * dct).max(0.0);
                 let adh = if dist > rr {
                     let c = b.clump[i] as usize;
                     let dc = len([pi[0]-b.cc[c][0], pi[1]-b.cc[c][1], pi[2]-b.cc[c][2]]);
-                    if dc > 2.5 * b.cr[c] { 0.0 } else { 15.0 * (1.0 - (dist - rr) / (ra - rr)) }
+                    if dc > 2.5 * b.cr[c] { 0.0 } else { 15.0 * (1.0 - (dist - rr) / (ra - rr)) * sqf }
                 } else { 0.0 };
                 let f = (push - adh).clamp(-25.0, AMAX);
                 for k in 0..3 {
@@ -665,7 +741,7 @@ fn sub(b: &mut B, dt: f32, t: f32) {
                     }
                     hitn[bi] += 1.0;
                     b.hitcd[i] = 0.2;
-                    b.chroma[i] *= 0.5;                           // energy given up
+                    // chroma is recomputed in color_and_out, so damping it here was dead code
                 }
             }
         }
@@ -702,7 +778,7 @@ fn sub(b: &mut B, dt: f32, t: f32) {
         for k in 0..3 { b.p[i][k] += b.v[i][k] * dt; }
         {
             let pp = b.p[i];
-            let kk = ohk((pp[0] / 16.0).floor() as i32, (pp[2] / 16.0).floor() as i32);
+            let kk = ohk((pp[0] / 2.0).floor() as i32, (pp[2] / 2.0).floor() as i32);
             for s in 0..b.obc[kk] as usize {
                 let ob = 24 + 8 * b.obl[kk][s] as usize;
                 let (bx, bz, hw, hd, top) = (b.inp[ob], b.inp[ob+1], b.inp[ob+2], b.inp[ob+3], b.inp[ob+4]);
@@ -760,24 +836,21 @@ fn color_and_out(b: &mut B, dt: f32, t: f32, w: f32, cn: [f32; 3], mn: [f32; 3],
     let cs = KP.sqrt();
     let att = 1.0 - (-dt / 0.04).exp(); let dec = 1.0 - (-dt / 0.25).exp();
     for i in 0..n {
-        let c = b.clump[i] as usize; let v = b.v[i];
-        let mrel = len([v[0]-b.cv[c][0], v[1]-b.cv[c][1], v[2]-b.cv[c][2]]) / cs;
-        let mb = len([v[0]-b.vm[0], v[1]-b.vm[1], v[2]-b.vm[2]]) / cs;
-        let mut hm = 1.0f32;
-        for s in 0..4 { if b.bond[i][s] as usize != i { hm = hm.min(b.health[i][s]); } }
-        // Sparse, not a wash: the thresholds sit above the ambient flow, the tip is
-        // sharpened to sp^4 and gated by its own motion, so only real events light up.
-        let a_rel = smooth(1.2, 2.2, mrel);
-        let a_fl = if b.flags[i] & 2 != 0 { 0.75 * smooth(0.08, 0.4, mb) } else { 0.0 };
-        let a_fr = if b.flags[i] & 4 != 0 { 0.30 * (1.0 - hm) } else { 0.0 };
+        let v = b.v[i];
+        let sp = len([v[0]-b.pv[0], v[1]-b.pv[1], v[2]-b.pv[2]]);
+        let mb = sp / cs;
+        // Speed is the driver and the mapping is monotonic: faster -> brighter red.
+        // Strain and the tendril tip only amplify; neither can light a still cell.
+        let spd = clampf((sp - 0.80) / 1.20, 0.0, 1.0);
         let a_st = 0.25 * smooth(0.6, 1.2, b.strain[i]);
-        let a_tip = 0.90 * b.chroma2[i] * b.chroma2[i] * smooth(0.15, 0.45, mb);
-        let raw = clampf(a_rel.max(a_fl).max(a_fr) + a_st + a_tip, 0.0, 1.0);
+        let det = if b.flags[i] & 2 != 0 { 0.62 } else { 0.0 };
+        let a_tip = b.chroma2[i] * spd;
+        let raw = clampf(spd.max(det) + 0.50 * a_tip, 0.0, 1.0);
         let cur = b.chroma[i];
         let act = cur + (raw - cur) * if raw > cur { att } else { dec };
         b.chroma[i] = act;
         // hysteresis: up at 0.38/0.52/0.68, down 0.06 lower
-        let up = [0.55f32, 0.70, 0.85];
+        let up = [0.30f32, 0.55, 0.80];
         let mut l = b.lvl[i] as usize;
         while l < 3 && act > up[l] { l += 1; }
         while l > 0 && act < up[l - 1] - 0.06 { l -= 1; }
@@ -793,8 +866,8 @@ fn color_and_out(b: &mut B, dt: f32, t: f32, w: f32, cn: [f32; 3], mn: [f32; 3],
         // and a bright red reads as beige.
         let lv = b.lvl[i] as usize;
         let cols = [[0.006f32, 0.004, 0.004], [0.100, 0.004, 0.004], [0.350, 0.008, 0.008], [0.750, 0.012, 0.012]];
-        let ems = [0.0f32, 0.25, 0.45, 0.60];
-        let lo = [0.0f32, 0.55, 0.70, 0.85]; let hi = [0.55f32, 0.70, 0.85, 1.0];
+        let ems = [0.0f32, 0.20, 0.36, 0.48];
+        let lo = [0.0f32, 0.30, 0.55, 0.80]; let hi = [0.30f32, 0.55, 0.80, 1.0];
         let fr = clampf((act - lo[lv]) / (hi[lv] - lo[lv]), 0.0, 1.0);
         let (col, em) = (cols[lv], if lv == 0 { 0.0 } else { ems[lv] * (0.8 + 0.4 * fr) });
         let mut hm = 1.0f32;

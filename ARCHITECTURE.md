@@ -206,6 +206,8 @@ absolute yaw/pitch. Never overwrite one with the other.
 | `sim/pp.js` | ~110 | **the bridge**: wasm load, PPState views, shims (`sea`, `updateSea`, `hgt`, `createWind`), `BUILD_TAG` | WASM |
 | `sim/sea.js` | 65 | JS reference sea (f64): dispersion, P–M spectrum, τ-chase, drift, mod field (seed 777), `hgt`. The `sea` export carries `MOD`/`MOD_SIZE` (fallback foam-texture contract) | shaders (must match) |
 | `sim/wind.js` | 42 | JS reference wind: breathing mean, log profile, advected gust noise, building wake, `x/y/z` = last `at()` result (rain contract) | sim/pp (interface twin) |
+| `sim/blob.js` | ~120 | **the anomaly bridge**: ABI v1, its own static (never PPState), input block (wind, water, two bodies, 64 AABBs), output views (`pos/col/aux/st2/meta`), `blobCollide` + `blobDrag` for the drone | WASM blob core |
+| `world/blob.js` | ~150 | anomaly renderer: instanced camera-facing impostors, 8 grains per cell (12 000 instances), grain jostle from strain, no fog (the scene fog is grey and would wash the coal) | sim/blob |
 | `style.css` | — | overlay, vignette, grain | — |
 
 Boot order in `main.js`: `initPP` → stage → `PP.scene/camera` registered → sky/ocean/lights →
@@ -227,6 +229,10 @@ was moved to `old/` during restructuring.
 | `src/sea.rs` | 226 | sea model, f64 inside: 7 bands `K=[0.045…2.3]`, `NMOD=5` rendered bands, P–M ratios (long 0.45–2.2, short 0.6–1.5), τ≈150 s amplitude / 70 s direction chase, drift ≈ 3% of wind, 256×256 mod field (R envelope, G phase, seed 777), `hgt()`, `slope()`, `water_motion()` (Stokes net transport + oscillatory surge) |
 | `src/wind.rs` | 177 | weather: `u10` breathes (410 s, 97 s periods, ±22%/10%), dir wanders (530 s, 151 s), log profile `z0=0.02`, two-octave value-noise gusts advected by the wind itself, 4 building effects (wake deficit, stagnation+upwash front, corner speed-up, roof-height fade), `at()` returns `{x,y,z,g}` |
 | `src/rng.rs` | 52 | JS-compatible RNG and hash. **Logical shifts only** (`>>>` semantics on `u32`) |
+| `src/blob/mod.rs` | 40 | anomaly ABI: `pp_blob_init/step/out_ptr/in_ptr/set_form/impulse/set_target/abi_version`. Separate static, never touches PPState |
+| `src/blob/state.rs` | 210 | `B` struct: 1500 cells, 3000 clumps, 12 skeleton nodes, 6 tendril chains, bonds, brain fields. `init()` builds the ball, clumps (Morton), bonds (k-NN inside a clump), chains |
+| `src/blob/sim.rs` | 880 | the colony: SPH (poly6/spiky, two radii), clump shape matching, bond tearing with a rate controller, sporulation, skeleton + verlet chains, pursuit controller with obstacle flow, brain (aggro/encircle/grab/squeeze), activity and the coal/ember palette |
+| `src/blob/util.rs` | 60 | `len/norm/clampf/smooth`, xorshift RNG |
 
 There is no `human.rs` — the human body is JS-side (`flight/human-phys.js`), like the drone.
 The archived Rust version lives in `old/human-rs-archived.rs` for reference.
@@ -236,6 +242,51 @@ Build: `make wasm` → `PPE-physics/scripts/build.sh` drives `rustc` directly to
 `RUST_TC=<toolchain>` overrides) → output to `PPE-graphics/sim/pocket_physics.wasm`
 (~118 KB). Dev-server no-cache middleware keeps stale cores out of the browser; the
 `pp-wasm-ship` vite plugin copies it into `dist/` on build.
+
+---
+
+## 5.1 The anomaly (blob)
+
+A second, independent simulation in the same wasm: a colony of 1500 cells that hunts the
+drone. It has **its own static and its own exports** — `PPState` is untouched, so the
+environment ABI and the anomaly ABI evolve separately.
+
+**Model.** Cells are SPH particles (poly6 density, spiky gradient, two smoothing radii).
+They are grouped into ~300 clumps of 3–8 cells with a shape-matching spring; bonds exist
+only *inside* a clump (a cross-clump bond is a rubber band that compresses the whole body
+into one dense heap). Bonds tear above a strain threshold and heal below it, with a
+controller that keeps the tear rate near `10 + 50·wildness` per second. A skeleton of 12
+nodes and 6 verlet chains (6 points each) gives the body its shape and its tendrils.
+
+**Pursuit.** `cen` (the skeleton centre, not the mass centroid) chases the target with
+`V_MAX = 18 m/s`, `A_MAX = 6 m/s²`, leading the target by 0.6 s. Buildings are avoided by
+a tangential steer; the keep-out radius is `0.5·rbody + 0.2` (18 m) because the body is
+56 m and the gaps between buildings are ~30 m — a full-radius keep-out made it bounce off
+the city instead of flowing through it.
+
+**Brain.** A programmatic layer, no learning: `aggro` (enter at 196 m, release at 294 m,
+3 s), `encircle` (the node ring shifts *beyond* the target so the mass wraps around it),
+`grab` (3 chains put their tips on a sphere around the target — a cage, not a hand), and
+`squeeze` (the adhesion is biased so the net reaction on the drone points at `cen`).
+`pp_blob_set_target(slot)` switches the target between the drone (0) and the operator (1).
+
+**Colour.** Four canonical levels over coal: `0.006/0.004/0.004`, `0.100/0.004/0.004`,
+`0.350/0.008/0.008`, `0.750/0.012/0.012`, emissions `0 / 0.20 / 0.36 / 0.48`. The driver is
+speed only: `spd = (|v − v_body| − 0.80) / 1.20`, `act = max(spd, detach) + 0.5·tip·spd`,
+levels at `0.30 / 0.55 / 0.80` with hysteresis. The curl current scales with `aggro`
+(`0.30 + 0.70·aggro`) so the body is calm and coal at rest and agitated and red while
+hunting. **The palette is canon — do not change it without an explicit order.**
+
+**Drone interaction.** The capsule radius is 1.4 m, not the drone's 0.5 m: the body is
+sparse (~4 m between cells) and the drone slipped through it. Contact is a soft push-out
+(half the penetration per frame) plus adhesion, and the medium's viscosity is
+`min(8, 1.5·n)` s⁻¹ from the number of cells in contact. Red cells hand over their own
+momentum along their own direction of travel (two-body impulse, restitution 0.4, friction
+0.3). The reaction is clamped to 30 m/s², below the drone thrust of 38, so escape is always
+possible but slow.
+
+**Output block** (`N_MAX = 8192`): `pos` 0, `col` 4N, `aux` 8N, `st2` 12N, `meta` 16N.
+`st2 = (strain, health_min, clump_id, free_timer)` feeds the renderer's grain jostle.
 
 ---
 
@@ -307,6 +358,7 @@ Layered, all runnable without a browser except the last:
 | L1 golden | `npm test` (`test/sim.test.mjs`) | 14 checks on the JS reference model: waves run downwind, rms height in range, modulation tiles seamlessly, sea responds to wind, wind profile grows with height, wake/stagnation/speed-up around buildings, noise statistics |
 | L1 golden (Rust) | `cd PPE-physics && cargo test` (`tests/sim.rs`) | the same checks ported, **plus** `golden_state_matches_js_dump`: `w1/w2/w3/ratio` and 20 `hgt()` probes bit-for-bit against `tests/golden.json`, **plus** `golden_wind_clock_matches_js_dump`: the wind clock over 600 s of variable-dt steps matches the JS dump (ABI guard for `pp_step(dt, t)`) |
 | L1.5 edge | `cargo test` (`tests/edge.rs`) | `MAX_OBST` boundary, zero-wind sea stability, `hgt` finite over 5000 random probes |
+| L1.6 blob | `cargo test --test blob` (`tests/blob.rs`) | 12 checks on the anomaly core: determinism (same seed bit-identical), hostile inputs finite, `dt = 0` safe, idle body bounded, pursuit closes, aggro does not flicker in the hysteresis band, palette is exactly the four canonical levels, contract offsets, drone reaction, target slot, and **faster is brighter** (brightness monotonic in speed) |
 | L2 integration | `node test/integration.mjs` | the WASM contract itself: layout offsets, view liveness, the no-alloc invariant, full per-frame call sequence |
 | L2.5 fallback | `node --test test/fallback.test.mjs` | the JS-fallback contract: `sea.MOD`/`MOD_SIZE` on the sea object (foam texture), `wind.x/y/z` on the reference wind (rain), `hgt` finite |
 | L3.5 wrapper | `node test/human-model.mjs` | the human model through the **real `createHumanPhys()`** on the WASM sea: spawn, roof walk, fall→Swim, calm/storm swim, head floor, jump apex, crouch |
@@ -349,7 +401,9 @@ both bodies playable, sea/wind/rain/audio verified in the browser. The P0/P1 aud
 
 The design targets (operator body, drone claw, floating container, two-body switching, shadow
 entities, the leviathan) live in the git history and the audit notes. The Rust core
-covers the environment (sea + wind); bodies are JS and read it through one interface. New
-body-physics systems (claw, container physics, interiors) go into JS following the
-human-phys/drone pattern; only if a body simulation becomes compute-heavy does it migrate to
-Rust — behind the same read-only-buffer contract, never through PPState body fields.
+covers the environment (sea + wind) **and the anomaly** (§5.1) — the anomaly is the first
+body that lives in Rust, because 1500 cells of SPH do not belong in JS. It keeps its own
+static and its own ABI; PPState still carries no body data. New body-physics systems (claw,
+container physics, interiors) go into JS following the human-phys/drone pattern; only if a
+body simulation becomes compute-heavy does it migrate to Rust — behind the same
+read-only-buffer contract, never through PPState body fields.

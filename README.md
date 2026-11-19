@@ -59,6 +59,7 @@ PPE-graphics/
     city.js             seeded layout, merged geometry, foam, beacons, collisions
     rain.js             rain (line segments, dynamic buffer)
     atmosphere.js       moon arc, cloud cover, lightning (CFG, lightning)
+    blob.js             the anomaly: instanced impostors, 8 grains per cell, grain jostle
   audio/audio.js        synthesized wind, rumble and splash — no samples
   flight/
     input.js            keyboard and mouse
@@ -70,12 +71,15 @@ PPE-graphics/
     pp.js               WASM loader + JS views over the shared memory block
     sea.js              JS reference sea model (fallback)
     wind.js             JS reference wind model (fallback)
+    blob.js             anomaly bridge: ABI v1, its own static, collide + drag for the drone
 PPE-physics/
   src/lib.rs            WASM API boundary: PPState layout, exported C functions
   PPE-physics/src/sea.rs            sea model (port of sim/sea.js, bit-identical)
   PPE-physics/src/wind.rs           wind model (port of sim/wind.js, bit-identical)
   PPE-physics/src/rng.rs            JS-compatible RNG and hash (logical shifts!)
+  PPE-physics/src/blob/             the anomaly: state, SPH colony, brain, activity/palette
   PPE-physics/tests/sim.rs          golden tests against the JS reference
+  PPE-physics/tests/blob.rs         12 checks on the anomaly core
   PPE-physics/tests/golden.json     reference values dumped from Node
   PPE-physics/scripts/build.sh      rustc -> wasm32-unknown-unknown -> PPE-graphics/sim/pocket_physics.wasm
 PPE-server/             vite.config.js (log-endpoint, wasm no-cache), dist/
@@ -98,7 +102,9 @@ test/pp-test.html      standalone page: boots the WASM core and prints live valu
 ## Physics core (Rust → WASM)
 
 The environment simulation (sea + wind) lives in Rust and compiles to
-`PPE-graphics/sim/pocket_physics.wasm` (~118 KB).
+`PPE-graphics/sim/pocket_physics.wasm` (~118 KB). The anomaly (a 1500-cell colony that hunts
+the drone) is the second Rust simulation, in the same wasm but behind its own static and its
+own exports — `PPState` is untouched.
 Bodies (drone, human) are JS modules that read the environment through one interface.
 Rendering stays in three.js. The boundary is a single `#[repr(C)]` block at the start of
 linear memory — JS creates `Float32Array` views **once** at init and only reads them per frame:
@@ -106,6 +112,11 @@ zero copies, zero `JsValue` traffic in the hot loop.
 
 Exports (plain `extern "C"`, no wasm-bindgen):
 `pp_init`, `pp_step(dt, t)`, `pp_hgt(x, z, t)`, `pp_at(x, y, z)`, `pp_set_obstacles(count)`, `pp_mod_ptr`.
+
+Anomaly exports (separate static, ABI v1):
+`pp_blob_init(seed, n)`, `pp_blob_step(dt, t)`, `pp_blob_out_ptr`, `pp_blob_in_ptr`,
+`pp_blob_set_form(form, blend)`, `pp_blob_impulse(x, y, z, r, s)`, `pp_blob_set_target(slot)`,
+`pp_blob_abi_version`. See ARCHITECTURE.md §5.1.
 
 `main.js` boots the WASM core first; if it fails to load, the game silently falls back to the
 JS reference models in `sim/sea.js` / `sim/wind.js` — same formulas, same results, slower.
@@ -138,6 +149,9 @@ Requires the `wasm32-unknown-unknown` std for your toolchain. The script drives 
   wind profile, wake behind buildings, modulation tiling).
 - `cd PPE-physics && cargo test` — the same checks ported to Rust, plus a bit-for-bit comparison
   of `w1/w2/w3/ratio` and `hgt()` against `PPE-physics/tests/golden.json` (dumped from Node).
+- `cargo test --test blob` — 12 checks on the anomaly core: determinism, hostile inputs,
+  `dt = 0`, idle bounds, pursuit, aggro hysteresis, the four canonical palette levels, the
+  output contract, the drone reaction, the target slot, and brightness monotonic in speed.
 
 ## Design document
 
