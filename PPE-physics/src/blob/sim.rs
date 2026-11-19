@@ -628,6 +628,24 @@ fn sub(b: &mut B, dt: f32, t: f32) {
                     // reaction on the drone: -f*nn*m_i / M_d, M_d = 1 (thrust is an acceleration)
                     b.body_f[bi][k] -= f * nn[k] * b.m[i];
                 }
+                // Active (red) cells hit: they hand over their own momentum along
+                // their own direction of travel. Only while moving into the drone.
+                // chroma is last frame's activity, one frame stale, which is fine.
+                let act = b.chroma[i];
+                if dist < rr && act > 0.38 {
+                    let sp = len(vi);
+                    let vn2 = vi[0]*nn[0] + vi[1]*nn[1] + vi[2]*nn[2];
+                    if sp > 1e-3 && vn2 < 0.0 {
+                        // m_i/M_d = 0.16, so the hit must stay small in cell units:
+                        // 8 m/s^2 on a cell is ~36 m/s^2 on the drone, at the clamp.
+                        let hit = (5.0 * act * sp).min(8.0);
+                        for k in 0..3 {
+                            let u = hit * vi[k] / sp;
+                            a[k] -= u;                       // the cell is stopped by the impact
+                            b.body_f[bi][k] += u * b.m[i];   // the drone takes the hit
+                        }
+                    }
+                }
             }
         }
         // age & clamp
