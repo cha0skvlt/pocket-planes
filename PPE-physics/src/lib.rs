@@ -33,6 +33,7 @@
 use crate::sea::Sea;
 use crate::wind::Wind;
 
+pub mod blob;
 pub mod rng;
 pub mod sea;
 pub mod wind;

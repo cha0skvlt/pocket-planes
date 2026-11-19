@@ -38,6 +38,7 @@ export async function initPP() {
   const bytes = await res.arrayBuffer();
   const { instance } = await WebAssembly.instantiate(bytes, { env: {} });
   const ex = instance.exports;
+  PP.ex = ex; // blob bridge (sim/blob.js) reads the same instance
   const statePtr = ex.pp_init();
   const mem = ex.memory;
   // ABI handshake: a stale core with a different contract must fail loudly here,

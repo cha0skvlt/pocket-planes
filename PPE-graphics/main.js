@@ -16,6 +16,8 @@ import {createHuman} from './flight/human.js';
 import {createSeaUniforms} from './world/waves.js';
 import {createOverlay} from './ui/overlay.js';
 import {initPP,PP,sea as seaPP,updateSea as updateSeaPP} from './sim/pp.js';
+import {initBlob,BLOB,blobInput,blobObstacles,blobCollide} from './sim/blob.js';
+import {createBlob} from './world/blob.js';
 import {createWind as createWindJS} from './sim/wind.js';
 import {sea as seaJS,updateSea as updateSeaJS,hgt as hgtJS} from './sim/sea.js';
 
@@ -47,6 +49,18 @@ async function boot(){
  // register renderer objects for modules that need them without prop-drilling
  PP.scene=stage.S; PP.camera=stage.cam;
  const {R,S,cam,rift,T,fogU}=stage;
+ // Enemy: a colony of cells with its own Rust core (PPE-physics/src/blob).
+ // Separate static and separate exports — PPState is untouched.
+ let blob=null;
+ // Local body is ~2.2 m across. Scale 28 -> ~62 m: an anomaly over the city, not a cloud of bubbles.
+ const BLOB_SCALE=28;
+ if(useWASM){try{
+  initBlob(12345,1500);
+  blob=createBlob(S,new THREE.Vector3(0,72,-20),BLOB_SCALE);
+  log.info('boot: blob up, cells='+BLOB.N+' grains='+blob.grains+' scale='+BLOB_SCALE+' abi='+BLOB.ex.pp_blob_abi_version());
+ }catch(e){log.warn('boot: blob failed',e)}}
+ const _bw={x:0,y:0,z:0,g:0},_b0={x:0,y:0,z:0,r:0,vx:0,vy:0,vz:0},_b1={x:0,y:0,z:0,r:0,vx:0,vy:0,vz:0};
+ let bfr=0;
  const seaU=useWASM?createSeaUniforms(seaPP):createSeaUniforms();
  const sky=createSky(S,fogU),ocean=createOcean(S,fogU,seaU.uniforms),lights=createLights(S,rift);
  const tex=createTextures(R),city=createCity(S,tex),rain=createRain(S);
@@ -108,6 +122,25 @@ async function boot(){
     human.step(dt,tw,{fwd:inp.fwd,side:inp.side,run:inp.run,jump:inp.jump});
    }
    drone.step(dt,tw);const {pos,vel,wind:dw,out}=drone;
+   if(blob){ // world -> local (divide by scale), step, reaction back to world (multiply)
+    const o=blob.origin,k=1/BLOB_SCALE;
+    if((bfr++%10)===0){const lst=[];for(const b of city.bl){const dx=b.x-o.x,dz=b.z-o.z,d=dx*dx+dz*dz;if(d<160000)lst.push([d,b]);}lst.sort((a,b)=>a[0]-b[0]);blobObstacles(lst.length>64?lst.slice(0,64).map(e=>e[1]):lst.map(e=>e[1]),o,BLOB_SCALE);}
+    _bw.x=dw.x*k;_bw.y=dw.y*k;_bw.z=dw.z*k;_bw.g=dw.g;
+    _b0.x=(pos.x-o.x)*k;_b0.y=(pos.y-o.y)*k;_b0.z=(pos.z-o.z)*k;_b0.r=0.5*k;
+    _b0.vx=vel.x*k;_b0.vy=vel.y*k;_b0.vz=vel.z*k;
+    if(human){_b1.x=(human.pos.x-o.x)*k;_b1.y=(human.pos.y-o.y)*k;_b1.z=(human.pos.z-o.z)*k;_b1.r=0.4*k;
+     _b1.vx=human.vel.x*k;_b1.vy=human.vel.y*k;_b1.vz=human.vel.z*k;}
+    blobInput(_bw,(hgtJS(o.x,o.z,tw)-o.y)*k,_b0,human?_b1:null);
+    BLOB.step(dt,tw);
+    // the colony is solid for the drone: same push-out + restitution as city.collide
+    blobCollide(pos,vel,0.5,o,BLOB_SCALE);
+    const m=BLOB.meta; // m[11..13] = reaction acceleration on body0, local units
+    // clamp in world units: the core clamps to 40 local, which is 40*scale m/s^2
+    vel.x+=Math.max(-40,Math.min(40,m[11]*BLOB_SCALE))*dt;
+    vel.y+=Math.max(-40,Math.min(40,m[12]*BLOB_SCALE))*dt;
+    vel.z+=Math.max(-40,Math.min(40,m[13]*BLOB_SCALE))*dt;
+    blob.update(tw);
+   }
    // camera follows the active body; during Tab the arc flies between them
    if(switchT>=0&&human){ // arc only when both bodies exist
     switchT+=dt*1.6;
