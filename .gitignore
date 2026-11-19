@@ -5,3 +5,6 @@ PPE-physics/target/
 old/*
 !.gitkeep
 .DS_Store
+
+# specs stay local, never in the repo
+PPE-physics/SPEC-*.md
