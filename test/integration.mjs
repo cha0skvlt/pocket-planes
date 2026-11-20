@@ -86,5 +86,19 @@ for (let i = 0; i < 3000; i++) {
 }
 ok(bad === 0, `3000-frame game loop: no NaN in wind/at_out/hgt (${bad} violations)`);
 
+// ---- key theft exports (SPEC-KEY §5): scalar, no memory, views must survive ----
+console.log('L2.5 blob key exports');
+ok(typeof ex.pp_blob_key_stolen === 'function' && typeof ex.pp_blob_aggro === 'function', 'pp_blob_key_stolen / pp_blob_aggro exported');
+ex.pp_blob_init(12345, 512);
+const bOut = new Float32Array(mem.buffer, ex.pp_blob_out_ptr(), 16 * 8192 + 16);
+const bIn = new Float32Array(mem.buffer, ex.pp_blob_in_ptr(), 544);
+ok(ex.pp_blob_aggro() === 0, 'aggro starts at 0');
+ok(ex.pp_blob_key_stolen() === 1 && ex.pp_blob_key_stolen() === 1 && ex.pp_blob_key_stolen() === 1, 'pp_blob_key_stolen is idempotent');
+bIn[8] = 3; bIn[11] = 0.05; bIn[15] = 1;
+for (let i = 0; i < 120; i++) ex.pp_blob_step(1 / 60, i / 60);
+ok(ex.pp_blob_aggro() >= 0.85, 'stolen: aggro locked at >= 0.85');
+ok(bOut.buffer === mem.buffer && bOut.byteLength > 0 && bIn.byteLength > 0, 'blob views still attached after the new calls');
+ok(Number.isFinite(bOut[16 * 8192 + 4]) && ex.pp_blob_abi_version() === 1, 'centroid finite, blob ABI still 1');
+
 console.log(`\nL2 integration: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

@@ -98,6 +98,7 @@ pub struct B {
     pub caim: [f32; TC],
     pub vm: [f32; 3],
     pub aggro: f32,
+    pub stolen: u32,
     pub enc: f32,
     pub grab: f32,
     pub sqz: f32,
@@ -208,7 +209,7 @@ pub fn init(seed: u32, n: u32) -> &'static mut B {
     b.next_tear = 6.0;
     b.body_f = [[0.0; 3]; 2];
     b.inp = [0.0; 544];
-    b.pst = 0; b.ptimer = 0.0; b.lose_t = 0.0; b.brk = 0.0; b.pw = 0.0; b.pv = [0.0; 3]; b.home = [0.0; 3]; b.pdist = 1e3; b.aggro = 0.0; b.enc = 0.0; b.grab = 0.0; b.sqz = 0.0; b.tslot = 0;
+    b.pst = 0; b.ptimer = 0.0; b.lose_t = 0.0; b.brk = 0.0; b.pw = 0.0; b.pv = [0.0; 3]; b.home = [0.0; 3]; b.pdist = 1e3; b.aggro = 0.0; b.stolen = 0; b.enc = 0.0; b.grab = 0.0; b.sqz = 0.0; b.tslot = 0;
     b.inp[4] = -100.0; // water level far below
     super::sim::build_grid(b);
     super::sim::assign_nodes(b, true);

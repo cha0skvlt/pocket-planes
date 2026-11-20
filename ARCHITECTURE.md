@@ -399,11 +399,11 @@ Layered, all runnable without a browser except the last:
 both bodies playable, sea/wind/rain/audio verified in the browser. The P0/P1 audit fixes
 (ABI clock, crouch crash, wasm shipping, fallback contracts) are in and guarded by tests.
 
-The design targets (operator body, drone claw, floating container, two-body switching, shadow
-entities, the leviathan) live in the git history and the audit notes. The Rust core
+The design canon (the loop, the drone claw, the entity and the key at its center, the portal)
+lives in CONCEPT.md. The Rust core
 covers the environment (sea + wind) **and the anomaly** (§5.1) — the anomaly is the first
 body that lives in Rust, because 1500 cells of SPH do not belong in JS. It keeps its own
 static and its own ABI; PPState still carries no body data. New body-physics systems (claw,
-container physics, interiors) go into JS following the human-phys/drone pattern; only if a
+key buoyancy, interiors) go into JS following the human-phys/drone pattern; only if a
 body simulation becomes compute-heavy does it migrate to Rust — behind the same
 read-only-buffer contract, never through PPState body fields.

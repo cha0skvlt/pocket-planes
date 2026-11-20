@@ -9,7 +9,7 @@ const wallM=new THREE.MeshStandardMaterial({map:wt,roughness:.95,metalness:0}),r
  antM=new THREE.MeshStandardMaterial({color:0x1b1d1f,roughness:.8}),
  beac=[0,1,2].map(()=>new THREE.MeshBasicMaterial({color:0xff2a1a}));
 let seed=7;const rnd=()=>{seed|=0;seed=seed+0x6D2B79F5|0;let t=Math.imul(seed^seed>>>15,1|seed);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296};
-const bl=[],spec=[[0,-70,32,24,62],[-72,-25,24,24,46],[64,35,24,32,40]];
+const bl=[],anx=[],spec=[[0,-70,32,24,62],[-72,-25,24,24,46],[64,35,24,32,40]];
 const wallG=[],roofG=[],antG=[],beaG=[[],[],[]],BCOL=new THREE.Color(1,.15,.08);
 const gRoof=new THREE.BoxGeometry(1,5,1),gAnt=new THREE.CylinderGeometry(.12,.2,1,5),gBea=new THREE.SphereGeometry(.7,8,6);
 function add(x,z,w,d,fl){const bi=bl.length%3,H=fl*3.2,top=H-20,g=new THREE.BoxGeometry(w,H,d),uv=g.attributes.uv;
@@ -19,6 +19,9 @@ function add(x,z,w,d,fl){const bi=bl.length%3,H=fl*3.2,top=H-20,g=new THREE.BoxG
  const part=idx=>{const p=new THREE.BufferGeometry();['position','normal','uv'].forEach(n=>p.setAttribute(n,g.attributes[n]));p.setIndex(new THREE.BufferAttribute(idx,1));return p};
  wallG.push(part(wi));roofG.push(part(ix.slice(12,24)));
  roofG.push(gRoof.clone().scale(w*.35,1,d*.35).translate(x+w*.1,top+2.5,z));
+ // the rooftop hut is geometry, so it must also be a body: without an AABB the operator
+ // walks straight through it and spawns inside it
+ anx.push({x:x+w*.1,z,hw:w*.175,hd:d*.175,top:top+5,base:top});
  for(let k=0;k<3;k++){const hh=10+rnd()*14,ax=x+(rnd()-.5)*w*.6,az=z+(rnd()-.5)*d*.6;antG.push(gAnt.clone().scale(1,hh,1).translate(ax,top+8,az))}
  beaG[bi].push(gBea.clone().translate(x,top+22,z));
  const fg=new THREE.BoxGeometry(w+1,14,d+1),fu=fg.attributes.uv;for(let i=0;i<24;i++){fu.setX(i,fu.getX(i)*((i<8?d:w)/18))}
@@ -35,14 +38,22 @@ for(let n=0;bl.length<95&&n<4000;n++){const r=60+Math.pow(rnd(),1.35)*640,a=rnd(
  if(bl.some(b=>Math.abs(x-b.x)<b.hw+w/2+30&&Math.abs(z-b.z)<b.hd+d/2+30))continue;add(x,z,w,d,fl)}
 
 finalizeCity();
+// everything a body can hit: buildings plus their rooftop huts. `bl` stays the building list
+// (the blob obstacle table and the portal placement read it), `solid` is what collides.
+const solid=bl.concat(anx);
 function collide(pos,vel){let s=0;
  // AABB push-out, no margin, no roof pops: the drone bounces off walls by its
  // own inertia; landing on a roof is physics (low vertical speed), not collision.
- for(const b of bl){const dx=pos.x-b.x,dz=pos.z-b.z;if(pos.y<b.top&&Math.abs(dx)<b.hw&&Math.abs(dz)<b.hd){
+ for(const b of solid){const dx=pos.x-b.x,dz=pos.z-b.z;if(pos.y<b.top&&pos.y>(b.base||0)&&Math.abs(dx)<b.hw&&Math.abs(dz)<b.hd){
   const px=b.hw-Math.abs(dx),pz=b.hd-Math.abs(dz),py=b.top-pos.y;
-  if(py<px&&py<pz){s+=Math.min(1,Math.abs(vel.y)*.03);pos.y+=py;vel.y=Math.max(vel.y,0)*.3}
-  else if(px<pz){s+=Math.min(1,Math.abs(vel.x)*.03);pos.x+=Math.sign(dx)*px;vel.x*=-.25}
-  else{s+=Math.min(1,Math.abs(vel.z)*.03);pos.z+=Math.sign(dz)*pz;vel.z*=-.25}}}
+  // the roof is a FLOOR, not a wall: within a metre of the roof plane the body is set down on
+  // it. Resolving by the smallest axis alone shoved the drone sideways off the edge.
+  if(py<1.0||((b.base===undefined)&&py<px&&py<pz)){s+=Math.min(1,Math.abs(vel.y)*.03);pos.y+=Math.min(py,0.25);vel.y=Math.max(vel.y,0)*.3}
+  // bounded ejection: the full penetration in one frame is a teleport, and a drone that clips a
+  // roof edge from below was being flung metres away. 0.15 m/frame slides it out instead.
+  // A rooftop hut is an obstacle you go AROUND: only its own top is a floor, never its middle.
+  else if(px<pz){s+=Math.min(1,Math.abs(vel.x)*.03);pos.x+=Math.sign(dx||1)*Math.min(px,0.15);vel.x*=-.25}
+  else{s+=Math.min(1,Math.abs(vel.z)*.03);pos.z+=Math.sign(dz||1)*Math.min(pz,0.15);vel.z*=-.25}}}
  return s}
 function update(t,dt){
  const k=1-Math.exp(-5*dt);   // wall foam: splash height follows the water rise speed at the building (wave impact)
@@ -54,7 +65,8 @@ function update(t,dt){
 // has no margin, so the near plane pokes through the wall the moment the body
 // touches it. Push the camera out of every AABB by m before rendering.
 function camPush(p, m){
- for(const b of bl){
+ for(const b of solid){
+  if(p.y<(b.base||0)) continue; // a rooftop hut is not a wall below its own roof
   const dx=p.x-b.x, dz=p.z-b.z;
   const px=b.hw+m-Math.abs(dx), pz=b.hd+m-Math.abs(dz), py=b.top+m-p.y;
   if(px<=0||pz<=0||py<=0) continue;
@@ -63,5 +75,5 @@ function camPush(p, m){
   else p.z+=Math.sign(dz||1)*pz;
  }
 }
-return {bl,beac,collide,update,camPush};
+return {bl,anx,solid,beac,collide,update,camPush};
 }

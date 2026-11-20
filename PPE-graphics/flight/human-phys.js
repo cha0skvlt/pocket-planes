@@ -29,7 +29,7 @@ export const CARRY_GAIN = 0.45;
 export const SURF_PUSH = 1.4;   // extra push from breaking crests
 export const TILT_MAX = 0.5;    // rad, body tilt from wave slope
 
-export const GROUND = 0, JUMP = 1, SWIM = 2;
+export const GROUND = 0, JUMP = 1, SWIM = 2, CARRIED = 3;
 
 import { sampleMod, NMOD } from '../sim/sea.js';
 
@@ -77,11 +77,13 @@ export function createHumanPhys({ city, sea, hgt }) {
   let state = GROUND, crouch = false;
   let waveHit = 0, tilt = 0, tiltDir = 0;
 
+  // buildings AND their rooftop huts: the hut is a body, not decoration
+  const solid = city.solid || city.bl;
   // height of the solid floor under the body (city AABB top), -Infinity over open water.
   // The FSM needs the FLOOR, not the water: in deep water you always swim, on a roof you walk.
   function groundY(x, z) {
     let g = -Infinity;
-    for (const b of city.bl) {
+    for (const b of solid) {
       if (Math.abs(x - b.x) < b.hw && Math.abs(z - b.z) < b.hd && g < b.top) g = b.top;
     }
     return g;
@@ -91,13 +93,17 @@ export function createHumanPhys({ city, sea, hgt }) {
   // no teleports. Roof landing (smallest axis = Y) sets feet to roof top without popping.
   function collide() {
     const R = RADIUS, HEAD = STAND_H;
-    for (const b of city.bl) {
+    for (const b of solid) {
       const dx = pos.x - b.x, dz = pos.z - b.z;
       const insideX = Math.abs(dx) < b.hw + R, insideZ = Math.abs(dz) < b.hd + R;
-      const overlapsY = pos.y < b.top && pos.y + HEAD > 0; // building sits on the waterline
+      const overlapsY = pos.y < b.top && pos.y + HEAD > (b.base || 0); // a rooftop hut starts at the roof, not at the waterline // building sits on the waterline
       if (!(insideX && insideZ && overlapsY)) continue;
       const px = b.hw + R - Math.abs(dx), pz = b.hd + R - Math.abs(dz), py = b.top - pos.y;
-      if (py < px && py < pz && py < HEAD) { // standing on the roof: land on top
+      // Roof landing only when the body is genuinely OVER the roof, not merely within R of the
+      // wall: stepping off the edge has a tiny Y penetration too, and snapping on it threw the
+      // body back onto the roof every time it tried to leave.
+      const overRoof = Math.abs(dx) < b.hw && Math.abs(dz) < b.hd;
+      if (overRoof && py < 0.5 && vel.y <= 0.01) { // standing on the roof: land on top
         pos.y = b.top; if (vel.y < 0) vel.y = 0;
       } else if (px < pz) {
         pos.x = b.x + Math.sign(dx || 1) * (b.hw + R); if (vel.x * Math.sign(dx) < 0) vel.x = 0;
@@ -109,13 +115,37 @@ export function createHumanPhys({ city, sea, hgt }) {
 
   const eye = () => crouch ? CROUCH_H : STAND_H;
 
+  // ------------------------------------------------------------- carried
+  // Slaved to the claw: no integration of its own. The feet hang CARRY_DROP under the tip (the
+  // capsule centre sits 0.15 m below it: the sag), approached with an exponential lag so the body
+  // swings behind the drone instead of being welded to it.
+  const CARRY_DROP = STAND_H / 2 + 0.5, CARRY_LAG = 8; // feet well below the tip: the head must hang clear of the drone, not inside it
+  const carry = { x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 0, set: false };
+  function stepCarried(dt) {
+    if (carry.set) {
+      const k = 1 - Math.exp(-CARRY_LAG * dt);
+      pos.x += (carry.x - pos.x) * k; pos.y += (carry.y - CARRY_DROP - pos.y) * k; pos.z += (carry.z - pos.z) * k;
+      vel.x = carry.vx; vel.y = carry.vy; vel.z = carry.vz;
+    }
+    tilt = 0; waveHit = Math.max(0, waveHit - dt * 0.8);
+  }
+  function detach(t) {
+    // back to the world: over a floor stand (or fall onto it), over water float
+    const g = groundY(pos.x, pos.z), h = hgt(pos.x, pos.z, t || 0);
+    carry.set = false; crouch = false;
+    if (g !== -Infinity) state = pos.y <= g + 0.1 ? GROUND : JUMP;
+    else state = pos.y <= h + 0.5 ? SWIM : JUMP;
+  }
+
   // ------------------------------------------------------------- ground
   function stepGround(dt, t, inp) {
     // No floor under the feet (open water / off a roof edge): the body cannot stand.
     // Either it is already in the water (swim) or it is airborne (fall). NEVER stay
     // Ground here — that is the Ground<->Jump flap that locks the body at the waterline.
     const floor0 = inp.groundY;
-    if (floor0 === -Infinity) { state = JUMP; return; }
+    // a floor far ABOVE the feet is not a floor: it is the roof of the building the body is
+    // standing beside. Snapping to it was the second way the operator teleported onto a roof.
+    if (floor0 === -Infinity || floor0 > pos.y + 0.6) { state = JUMP; return; }
     const floor = Math.max(floor0, pos.y - 0.05); // never below current feet
     if (hgt(pos.x, pos.z, t) > floor + WAIST) { state = SWIM; vel.y = 0; return; }
     const speed = inp.crouch ? WALK * 0.55 : inp.run ? RUN : WALK;
@@ -152,7 +182,8 @@ export function createHumanPhys({ city, sea, hgt }) {
       // This is how a fall off a roof ends: not Ground, but Swim.
       if (pos.y <= hgt(pos.x, pos.z, t)) { state = SWIM; vel.y *= 0.3; return; }
       const floor = inp.groundY;
-      if (floor !== -Infinity && pos.y <= floor) { pos.y = floor; vel.y = 0; state = GROUND; }
+      // land only on a floor the feet actually crossed this frame — not on a roof overhead
+      if (floor !== -Infinity && pos.y <= floor && floor - pos.y < 0.6) { pos.y = floor; vel.y = 0; state = GROUND; }
     }
   }
 
@@ -160,10 +191,13 @@ export function createHumanPhys({ city, sea, hgt }) {
   // The heart of it: you stroke against the WATER, and the water is busy
   // running its own wave trajectory. v_body = v_water + v_stroke.
   function stepSwim(dt, t, inp) {
+    crouch = false; // a crouch on the roof must not follow him into the water
     // stand up only when there is a floor and the water is below the waist above it.
     // In open water (no floor) you swim, period.
     const floor = inp.groundY;
-    if (floor > pos.y - 1.0 && hgt(pos.x, pos.z, t) < floor + WAIST - 0.15) { state = GROUND; return; }
+    // stand up only when the floor is AT the feet, not above the head: a swimmer inside a
+    // building's footprint used to read the roof as "floor" and snap 20 m up onto it.
+    if (floor > pos.y - 1.0 && floor < pos.y + 0.6 && hgt(pos.x, pos.z, t) < floor + WAIST - 0.15) { state = GROUND; return; }
     // 1. water motion at the body. The heavy suit cancels the oscillatory surge
     //    (it becomes tilt/shake); what drags the body is the Stokes net transport
     //    + wind drift. The carry is gated by the sea state: in a calm the stroke
@@ -240,6 +274,7 @@ export function createHumanPhys({ city, sea, hgt }) {
    *  inp: {fwd, side, run, jump} — crouch is a property of the body (set crouch).
    *  groundY is computed here from the city AABBs — no caller plumbing. */
   function step(dt, t, inp) {
+    if (state === CARRIED) { stepCarried(dt); return; }
     const i2 = { ...inp, crouch, groundY: groundY(pos.x, pos.z) };
     if (state === SWIM) stepSwim(dt, t, i2);
     else if (state === JUMP) stepAir(dt, t, i2);
@@ -250,6 +285,11 @@ export function createHumanPhys({ city, sea, hgt }) {
 
   return {
     step,
+    attach() { state = CARRIED; crouch = false; carry.set = false; },
+    detach,
+    /** Called every frame while carried: the claw tip and the drone velocity. */
+    carryTo(tip, v) { carry.x = tip.x; carry.y = tip.y; carry.z = tip.z; carry.vx = v.x; carry.vy = v.y; carry.vz = v.z; carry.set = true; },
+    get carried() { return state === CARRIED; },
     spawn(x, y, z, y0) {
       pos.x = x; pos.y = y; pos.z = z; yaw = y0; pitch = 0;
       vel.x = vel.y = vel.z = 0; state = GROUND; crouch = false; waveHit = 0; tilt = 0; tiltDir = 0;

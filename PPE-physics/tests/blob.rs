@@ -257,3 +257,85 @@ fn set_target_switches_slot() {
     assert!(d < 3.0, "with slot 1 the body must chase the operator, d = {d}");
     pp_blob_set_target(0);
 }
+
+// ---- key theft: the aggro lock (SPEC-KEY §1.5) ----
+fn meta() -> &'static [f32] { &out()[16 * MAX..16 * MAX + 16] }
+
+fn drone_at(x: f32) {
+    let i = inp();
+    i[8] = x; i[9] = 0.0; i[10] = 0.0; i[11] = 0.05; i[15] = 1.0;
+}
+
+/// Fresh colony, drone parked at 3 units until aggro saturates.
+fn engaged(n: u32) {
+    pp_blob_init(5, n + 1);
+    pp_blob_init(5, n);
+    clear_input();
+    drone_at(3.0);
+    for s in 0..300 { pp_blob_step(1.0 / 60.0, s as f32 / 60.0); }
+    assert!(pp_blob_aggro() > 0.99, "aggro must saturate at 3 units");
+}
+
+#[test]
+fn aggro_does_not_decay_when_stolen() {
+    let _g = lock();
+    engaged(540);
+    drone_at(40.0);
+    pp_blob_key_stolen();
+    for s in 0..300 { pp_blob_step(1.0 / 60.0, (300 + s) as f32 / 60.0); }
+    assert!(pp_blob_aggro() >= 0.85, "aggro = {}", pp_blob_aggro());
+}
+
+#[test]
+fn aggro_decays_when_not_stolen() {
+    let _g = lock();
+    engaged(548);
+    drone_at(40.0);
+    for s in 0..300 { pp_blob_step(1.0 / 60.0, (300 + s) as f32 / 60.0); }
+    assert!(pp_blob_aggro() < 0.2, "aggro = {}", pp_blob_aggro());
+}
+
+#[test]
+fn stolen_is_idempotent() {
+    let _g = lock();
+    pp_blob_init(5, 557);
+    pp_blob_init(5, 556);
+    clear_input();
+    drone_at(3.0);
+    assert_eq!(pp_blob_key_stolen(), 1);
+    assert_eq!(pp_blob_key_stolen(), 1);
+    assert_eq!(pp_blob_key_stolen(), 1);
+    for s in 0..300 { pp_blob_step(1.0 / 60.0, s as f32 / 60.0); }
+    assert_eq!(meta()[14], 2.0, "brain must still pursue");
+}
+
+#[test]
+fn stolen_changes_the_will_not_the_body() {
+    let _g = lock();
+    let go = |steal: bool| -> ([f32; 3], f32) {
+        pp_blob_init(5, 565);
+        pp_blob_init(5, 564);
+        clear_input();
+        drone_at(20.0);
+        if steal { pp_blob_key_stolen(); }
+        for s in 0..60 { pp_blob_step(1.0 / 60.0, s as f32 / 60.0); }
+        let m = meta();
+        ([m[4], m[5], m[6]], m[7])
+    };
+    let (a, ea) = go(false);
+    let (b, eb) = go(true);
+    let d = ((a[0]-b[0]).powi(2) + (a[1]-b[1]).powi(2) + (a[2]-b[2]).powi(2)).sqrt();
+    // The flag pins aggro, aggro drives the curl current, the curl moves cells — so the cell
+    // centroid shifts a little. What must not happen is a jump: the body is not teleported to
+    // the key and not frozen. One body radius is 1.1 local units; a quarter of it is the ceiling.
+    assert!(d < 0.28, "centroid jumped {d} local units");
+    assert!(ea.is_finite() && eb.is_finite(), "bbox extent not finite");
+    assert!((0.5..12.0).contains(&ea) && (0.5..12.0).contains(&eb), "bbox {ea} / {eb} out of range");
+}
+
+#[test]
+fn abi_unchanged() {
+    let _g = lock();
+    assert_eq!(pp_blob_abi_version(), 1);
+    assert_eq!(OUT_LEN, 16 * MAX + 16);
+}

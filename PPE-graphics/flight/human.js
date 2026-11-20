@@ -96,14 +96,14 @@ export function createHuman(city) {
     const g = new THREE.Group();
     g.position.set(0.16 * side, 0.72, 0);
     const joint = new THREE.Mesh(new THREE.SphereGeometry(0.1, 10, 8), mat.black);
-    const thigh = new THREE.Mesh(capsule(0.13, 0.32, 5, 10), mat.suit);
-    thigh.position.y = -0.24;
+    const thigh = new THREE.Mesh(capsule(0.13, 0.30, 5, 10), mat.suit);
+    thigh.position.y = -0.15;
     const knee = new THREE.Mesh(new THREE.SphereGeometry(0.09, 10, 8), mat.black);
-    knee.position.y = -0.46;
-    const shin = new THREE.Mesh(capsule(0.11, 0.3, 5, 10), mat.suit);
-    shin.position.y = -0.66;
+    knee.position.y = -0.30;
+    const shin = new THREE.Mesh(capsule(0.11, 0.30, 5, 10), mat.suit);
+    shin.position.y = -0.45;
     const boot = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.12, 0.26), mat.black);
-    boot.position.set(0, -0.86, 0.04);
+    boot.position.set(0, -0.66, 0.04); // sole at y=0: the hip is at 0.72, the boot bottom must touch the floor
     g.add(joint, thigh, knee, shin, boot);
     body.add(g);
     return g;
@@ -125,6 +125,7 @@ export function createHuman(city) {
   // FPV: the human never sees his own suit — hide the body while his camera is
   // active (same rule as the drone skin).
   root.visible = false;
+  let zoom = 0; // wheel: 0 = FPV, 1 = behind and above the body
 
   function step(dt, t, inp) {
     // ONE call: JS physics first (human-phys owns the FSM), then render + camera.
@@ -133,9 +134,9 @@ export function createHuman(city) {
     phys.step(dt, t, inp);
     const p = phys.pos, v = phys.vel;
     root.position.set(p.x, p.y, p.z);
-    body.rotation.y = phys.yaw;
+    body.rotation.y = phys.yaw + Math.PI; // the model is built facing +Z, the body moves toward -Z
 
-    const swimming = phys.state === 2;
+    const swimming = phys.state === 2, carried = phys.state === 3;
     const waveHit = phys.waveHit;
     const crouch = phys.crouch;
 
@@ -143,7 +144,7 @@ export function createHuman(city) {
     // tilt comes as (magnitude, azimuth) from the wave slope; convert to body axes
     const tiltMag = phys.tilt, tiltDir = phys.tiltDir;
     // world tilt direction -> body-local (body yaw rotates the frame)
-    const rel = tiltDir - phys.yaw;
+    const rel = tiltDir - body.rotation.y;
     const targetX = Math.cos(rel) * tiltMag;  // forward/back lean
     const targetZ = Math.sin(rel) * tiltMag;  // side lean
     // spring-damper feel: the suit is soft, it lags behind the wave
@@ -154,8 +155,17 @@ export function createHuman(city) {
     body.rotation.z = rag.tiltZ;
 
     // ---- limb sway: waves and walking ----
-    if (swimming) {
+    if (carried) {
+      // hanging from the claw: arms up in the grip, legs dangle, the body trails the drone's speed
+      const sp = Math.hypot(v.x, v.z);
+      armL.rotation.x = armR.rotation.x = -2.9; armL.rotation.z = 0.25; armR.rotation.z = -0.25;
+      legL.rotation.x = Math.sin(t * 2.3) * 0.2; legR.rotation.x = -Math.sin(t * 2.3 + 1) * 0.2;
+      body.position.y = 0;
+      body.rotation.x = Math.min(0.5, sp * 0.02) + Math.sin(t * 1.7) * 0.05;
+      body.rotation.z = Math.sin(t * 1.3) * 0.06;
+    } else if (swimming) {
       // swimming: slow crawl, arms alternate; waves add chaos via waveHit
+      body.position.y = 0; // a crouch on the roof must not follow him into the water
       rag.sway += dt * (2.2 + waveHit * 4);
       const s = Math.sin(rag.sway), c = Math.cos(rag.sway);
       armL.rotation.x = -1.6 + s * 0.9 + waveHit * Math.sin(t * 7) * 0.4;
@@ -187,17 +197,21 @@ export function createHuman(city) {
     }
 
     // ---- camera ----
+    root.visible = !active || zoom > 0.15; // third person must see the body it is driving
     if (active) {
       const eye = phys.eyeH; // stand/crouch
       const bob = swimming
         ? Math.sin(t * 1.9) * 0.06 + waveHit * Math.sin(t * 6) * 0.1
         : Math.abs(Math.sin(rag.walkPhase)) * 0.045 * Math.min(Math.hypot(v.x, v.z) / 1.6, 1);
-      cam.position.set(p.x, p.y + eye + bob, p.z);
+      const zb = 0.45 + zoom * 3.5, zu = zoom * 1.2; // wheel: FPV -> behind and above
+      // the offset follows the PITCH too, otherwise a looking-down operator climbs out of the frame
+      const pc = Math.cos(phys.pitch), ps = Math.sin(phys.pitch);
+      cam.position.set(p.x + Math.sin(phys.yaw) * pc * zb, p.y + eye + bob + zu - ps * zb, p.z + Math.cos(phys.yaw) * pc * zb);
       cam.rotation.order = 'YXZ';
       cam.rotation.y = phys.yaw;
-      cam.rotation.x = phys.pitch;
+      cam.rotation.x = phys.pitch - zoom * 0.22;
       // wave roll into the camera — you FEEL the sea leaning you
-      cam.rotation.z = rag.tiltZ * 0.6;
+      cam.rotation.z = rag.tiltZ * 0.6 * (1 - zoom);
     }
   }
 
@@ -208,6 +222,7 @@ export function createHuman(city) {
   }
 
   return { root, step, dispose, setActive(v) { active = v; root.visible = !v; }, get active() { return active; },
+    set zoom(v) { zoom = v; }, get zoom() { return zoom; },
     // physics passthrough (JS human-phys): spawn, live state
     spawn: (...a) => phys.spawn(...a),
     get pos() { return phys.pos; },
@@ -215,6 +230,7 @@ export function createHuman(city) {
     get yaw() { return phys.yaw; }, set yaw(v) { phys.yaw = v; },
     get pitch() { return phys.pitch; }, set pitch(v) { phys.pitch = v; },
     get tilt() { return phys.tilt; }, get tiltDir() { return phys.tiltDir; },
+    attach: () => phys.attach(), detach: t => phys.detach(t), carryTo: (a, b) => phys.carryTo(a, b), get carried() { return phys.carried; },
     get state() { return phys.state; }, get crouch() { return phys.crouch; }, set crouch(v) { phys.crouch = v; },
     get waveHit() { return phys.waveHit; }, get eyeH() { return phys.eyeH; },
   };

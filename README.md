@@ -9,8 +9,8 @@
 A game about exploring a pocket dimension: a night-time flooded city you fly through with an FPV
 drone — and, when the drone can't go further, switch to the operator and keep going on foot.
 
-**Game design:** [CONCEPT.md](CONCEPT.md) — the design bible: fantasy, entities, the weather as
-the main enemy, honest-drift survival rules, roadmap and open questions.
+**Game design:** [CONCEPT.md](CONCEPT.md) — the design canon: the loop (find the portal → take
+the key → activate it → drag the operator in), the three presences, roadmap and open questions.
 
 ![three.js](https://img.shields.io/badge/three.js-r128-049EF4?logo=threedotjs&logoColor=white)
 ![Rust](https://img.shields.io/badge/core-Rust%20%E2%86%92%20WASM-DEA584?logo=rust&logoColor=white)
@@ -155,5 +155,5 @@ Requires the `wasm32-unknown-unknown` std for your toolchain. The script drives 
 
 ## Design document
 
-The design targets (operator body, drone claw, floating container, two-body switching, shadow
-entities, the leviathan) live in **[CONCEPT.md](CONCEPT.md)** and the audit notes.
+The design canon — the loop, the drone's claw, the entity and the key at its center, the portal
+— lives in **[CONCEPT.md](CONCEPT.md)**.

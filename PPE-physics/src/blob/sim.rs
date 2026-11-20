@@ -248,7 +248,9 @@ fn sub(b: &mut B, dt: f32, t: f32) {
     let amax = 0.214f32;
     let toT = if act { norm(pdv) } else { [1.0, 0.0, 0.0] };
     // ---- brain: aggro, encircle, grab, squeeze, lead
-    if pd < 7.0 && b.aggro < 1.0 { b.aggro = (b.aggro + dt / 1.5).min(1.0); }
+    // the key is gone: the will hangs on the drone, only distance (the arm) still gates the grip
+    if b.stolen != 0 { b.aggro = b.aggro.max(0.85); }
+    else if pd < 7.0 && b.aggro < 1.0 { b.aggro = (b.aggro + dt / 1.5).min(1.0); }
     else if pd > 10.5 { b.aggro = (b.aggro - dt / 2.0).max(0.0); }
     let engage = b.pst == 2 && b.brk <= 0.0;
     // encircle starts at ~73 m, grab at ~112 m: the body must visibly open up

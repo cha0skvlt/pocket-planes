@@ -18,6 +18,8 @@ import {createOverlay} from './ui/overlay.js';
 import {initPP,PP,sea as seaPP,updateSea as updateSeaPP} from './sim/pp.js';
 import {initBlob,BLOB,blobInput,blobObstacles,blobCollide,blobDrag} from './sim/blob.js';
 import {createBlob} from './world/blob.js';
+import {createKey} from './sim/key.js';
+import {createPortal} from './world/portal.js';
 import {createWind as createWindJS} from './sim/wind.js';
 import {sea as seaJS,updateSea as updateSeaJS,hgt as hgtJS} from './sim/sea.js';
 
@@ -75,12 +77,25 @@ async function boot(){
   // is over open water (groundY=-Infinity), flips into Swim at once and
   // the keyboard feels dead. On a roof the state machine stays Ground.
   const roof=city.bl.reduce((a,b)=>b.top>a.top?b:a);
-  human.spawn(roof.x,roof.top,roof.z,0.64);
+  // near the edge, clear of the rooftop hut: the hut sits at x + hw*0.2 and spans to x + hw*0.55
+  human.spawn(roof.x-roof.hw*0.6,roof.top,roof.z,0.64);
   human.setActive(false); // start as the drone
   log.info(`boot: human spawned on roof (${roof.x.toFixed(0)},${roof.top.toFixed(0)},${roof.z.toFixed(0)})`);
  }
+ // The loop: key (held in the colony) -> claw -> portal -> haul the operator through.
+ // All three exist only with the WASM blob: no colony, no key, no door.
+ let key=null,portal=null,won=false;const _pc={tip:null,keyGrabbed:false,carried:false,hx:0,hy:0,hz:0};
+ if(blob&&BLOB.ready){
+  key=createKey({S,BLOB,origin:blob.origin,scale:BLOB_SCALE,sea:seaPP,wind,hgt:(x,z,tt)=>PP.hgt(x,z,tt)});
+  portal=createPortal({S,city});
+  drone.claw.targets.key=key;_pc.tip=drone.clawTip;
+  if(portal)log.info(`boot: portal at (${portal.center.x.toFixed(0)},${portal.center.y.toFixed(0)},${portal.center.z.toFixed(0)})`);
+ }
+ // the claw can carry the operator even when the colony failed to boot: no key, no door, but a body
+ drone.claw.targets.human=human;
  // Tab: switch bodies. Camera flies along an arc; the idle body keeps living.
  let body='drone'; // 'drone' | 'human'
+ let zoom=0;       // wheel: 0 = FPV, 1 = behind and above the active body
  let switchT=-1;   // arc animation clock, -1 = idle
  const switchArc={p:new THREE.Vector3(),q:new THREE.Quaternion()};
  const state={run:false};
@@ -109,19 +124,27 @@ async function boot(){
   // which samples foam noise at (p - uDrift). Raw velocity made foam jump ~0.4 m/frame.
   seaU.uniforms.uDrift.value.x+=sea.drift.x*sdt;seaU.uniforms.uDrift.value.y+=sea.drift.z*sdt;
   const cr=wind.u10/wind.U0*sdt;fogU.uCloud.value.x+=Math.cos(wind.dir)*cr;fogU.uCloud.value.y+=Math.sin(wind.dir)*cr;
-  if(state.run){
+  if(state.run&&!won){
+   zoom=Math.max(0,Math.min(1,zoom+input.zoom));drone.zoom=zoom;if(human)human.zoom=zoom;
+   drone.claw.targets.t=tw;drone.claw.targets.vel=drone.vel; // a dropped key keeps the drone's velocity
    // both bodies always step; input goes to the active one
+   drone.load=human&&human.carried?1+80/60:1; // set BEFORE the step: a load applied a frame late is a free frame of thrust
+   drone.step(dt,tw);const {pos,vel,wind:dw,out}=drone;
+   // the operator steps AFTER the drone: the claw tip he hangs from is this frame's, not the last one's
    if(human){
     const active=body==='human';
-    const inp=active?input.human():{fwd:0,side:0,run:false,jump:false,crouch:false};
+    const carried=human.carried,live=active&&!carried; // a carried operator cannot act
+    const inp=live?input.human():{fwd:0,side:0,run:false,jump:false,crouch:false};
+    if(carried&&drone.claw.holding==='op')human.carryTo(drone.clawTip,drone.vel);
     // Like the drone: consume the accumulated mouse delta and ADD it to the
     // body's own absolute yaw/pitch. input.yaw is a DELTA (mouse movement),
     // human.yaw is the ABSOLUTE course — never overwrite one with the other.
-    if(active){human.yaw+=input.yaw;human.pitch=Math.max(-1.45,Math.min(1.45,human.pitch+input.pitch));input.look.yaw=0;input.look.pitch=0}
-    human.crouch=inp.crouch;
+    if(active&&carried){input.yaw;input.pitch;input.look.yaw=0;input.look.pitch=0} // drain the mouse: a carried body must not bank a delta for the moment it is dropped
+    else if(active){human.yaw+=input.yaw;human.pitch=Math.max(-1.45,Math.min(1.45,human.pitch+input.pitch));input.look.yaw=0;input.look.pitch=0}
+    if(!carried)human.crouch=inp.crouch;
     human.step(dt,tw,{fwd:inp.fwd,side:inp.side,run:inp.run,jump:inp.jump});
    }
-   drone.step(dt,tw);const {pos,vel,wind:dw,out}=drone;
+   let aLoad=Math.hypot(drone.accel.x,drone.accel.y,drone.accel.z); // the drone's own flying, blob or not
    if(blob){ // world -> local (divide by scale), step, reaction back to world (multiply)
     const o=blob.origin,k=1/BLOB_SCALE;
     if((bfr++%10)===0){const lst=[];for(const b of city.bl){const dx=b.x-o.x,dz=b.z-o.z,d=dx*dx+dz*dz;if(d<160000)lst.push([d,b]);}lst.sort((a,b)=>a[0]-b[0]);blobObstacles(lst.length>64?lst.slice(0,64).map(e=>e[1]):lst.map(e=>e[1]),o,BLOB_SCALE);}
@@ -139,11 +162,22 @@ async function boot(){
     held = nc>0 ? held+dt : 0;
     const m=BLOB.meta; // m[11..13] = reaction acceleration on body0, local units
     // clamp in world units: adhesion must stay below the drone thrust (38 m/s^2)
-    vel.x+=Math.max(-30,Math.min(30,m[11]*BLOB_SCALE))*dt;
-    vel.y+=Math.max(-30,Math.min(30,m[12]*BLOB_SCALE))*dt;
-    vel.z+=Math.max(-30,Math.min(30,m[13]*BLOB_SCALE))*dt;
+    const rx=Math.max(-30,Math.min(30,m[11]*BLOB_SCALE)),ry=Math.max(-30,Math.min(30,m[12]*BLOB_SCALE)),rz=Math.max(-30,Math.min(30,m[13]*BLOB_SCALE));
+    vel.x+=rx*dt;vel.y+=ry*dt;vel.z+=rz*dt;
+    // claw load: the drone's own flying (thrust, wind, walls) plus the entity's clamped adhesion.
+    // blobDrag is the medium, not a load: the entity alone can slow the drone but never make it drop the key.
+    aLoad=Math.hypot(drone.accel.x+rx,drone.accel.y+ry,drone.accel.z+rz);
     blob.update(tw);
+    if(key){
+     key.step(dt,tw,drone.clawTip);
+     _pc.keyGrabbed=key.state===1;_pc.carried=!!(human&&human.carried);
+     if(human){_pc.hx=human.pos.x;_pc.hy=human.pos.y+0.85;_pc.hz=human.pos.z}
+     if(portal){const ev=portal.update(dt,_pc);
+      if(ev.opened){key.consume();drone.claw.release('portal')} // the key is spent, the claw opens
+      if(ev.won)won=true;}
+    }
    }
+   drone.claw.check(aLoad,drone.hitA); // the claw slips on overload with or without the colony
    // camera follows the active body; during Tab the arc flies between them
    if(switchT>=0&&human){ // arc only when both bodies exist
     switchT+=dt*1.6;
@@ -173,6 +207,7 @@ async function boot(){
     cam.position.y+=0.6;
    } // human active: keep the last human camera exactly where it was
   }
+  if(won&&portal)portal.update(dt,_pc); // the veil keeps fading after the run is frozen
   atmo.update(tw);T.value=tw;city.update(tw,sdt);
   // the FPV camera sits at the body centre: keep it out of the walls
   city.camPush(cam.position,0.6);

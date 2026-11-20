@@ -30,5 +30,11 @@ pub extern "C" fn pp_blob_impulse(x: f32, y: f32, z: f32, r: f32, s: f32) {
 }
 #[no_mangle]
 pub extern "C" fn pp_blob_set_target(slot: u32) { st().tslot = slot.min(1); }
+/// One-way latch: the claw has the key. Changes the brain's will (aggro lock), never the body.
+#[no_mangle]
+pub extern "C" fn pp_blob_key_stolen() -> u32 { st().stolen = 1; 1 }
+/// Test hook: the brain's aggro scalar.
+#[no_mangle]
+pub extern "C" fn pp_blob_aggro() -> f32 { st().aggro }
 #[no_mangle]
 pub extern "C" fn pp_blob_abi_version() -> u32 { 1 }

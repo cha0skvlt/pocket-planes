@@ -137,7 +137,7 @@ pub extern "C" fn pp_step(dt: f32, t: f32) {
     unsafe { sync() };
 }
 
-/// Water height. Mirror of the GLSL H(); used by the drone, container and camera bob.
+/// Water height. Mirror of the GLSL H(); used by the drone, the key and camera bob.
 #[no_mangle]
 pub extern "C" fn pp_hgt(x: f32, z: f32, t: f32) -> f32 {
     sea_ref().hgt(x as f64, z as f64, t as f64) as f32
